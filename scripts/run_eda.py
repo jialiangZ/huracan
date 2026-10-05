@@ -16,10 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from huracan.config import load_config, var_names
-from huracan.eval.metrics import crps_ensemble, essr, rmse_ensemble_mean
+from huracan.config import load_config
+from huracan.core import grid as G
+from huracan.core.metrics import crps_ensemble, essr, rmse_ensemble_mean
 from huracan.eval.scorecard import scorecard
-from huracan.inference import run_eda
+from huracan.inference.runner import run_eda
 
 
 def main():
@@ -37,14 +38,14 @@ def main():
 
     cfg = load_config(args.config)
     if args.workdir:
-        cfg["output_dir"] = args.workdir
-    out = Path(cfg["output_dir"])
+        cfg.output_dir = args.workdir
+    out = Path(cfg.output_dir)
 
     res = run_eda(cfg, out, device=args.device, start_index=args.start_index)
     preds = res["preds"].numpy()  # (M, 2F, npix, C) normalized
     truth = res["truth"].numpy()
 
-    names = var_names(cfg)[: preds.shape[-1]]
+    names = cfg.var_names()[: preds.shape[-1]]
     crps = crps_ensemble(preds, truth)  # (2F, C)
     ess = essr(preds, truth)
     rmse = rmse_ensemble_mean(preds, truth)
@@ -60,7 +61,10 @@ def main():
     for n in key:
         j = names.index(n)
         daily = ess[:, j].reshape(-1, 4).mean(axis=1)
-        print(f"  {n:>5}: {daily[0]:.2f} / {daily[4]:.2f} / {daily[-1]:.2f}")
+        i5 = min(4, len(daily) - 1)
+        print(
+            f"  {n:>5}: {daily[0]:.2f} / {daily[i5]:.2f} / {daily[-1]:.2f}"
+        )
 
     # scorecard vs persistence baseline (observed last state persists)
     persist = np.repeat(truth[0][None], truth.shape[0], axis=0)
@@ -78,9 +82,8 @@ def main():
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from huracan import grid as G
 
-    nside = cfg["grid"]["nside"]
+    nside = cfg.grid.nside
     spin = res["spinup_end"].numpy()
     fig, axes = plt.subplots(1, 2, figsize=(11, 3))
     for ax, stat, lab in [

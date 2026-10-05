@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test of the entire Huracan reproduction pipeline.
+"""End-to-end smoke test of the entire Huracan pipeline (Lightning layer).
 
 Runs on CPU with configs/smoke.yaml: synthetic data generation, SHT
 round-trip, all six training phases, EDA cycling, and CRPS/ESSR metrics.
@@ -18,19 +18,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 
-from huracan import grid as G
 from huracan.config import load_config
+from huracan.core import grid as G
+from huracan.core.metrics import crps_ensemble, essr
+from huracan.core.model import build_models
+from huracan.core.sht import MatrixSHT
 from huracan.data.synthetic import generate_synthetic
-from huracan.eval.metrics import crps_ensemble, essr
-from huracan.inference import run_eda
-from huracan.model import build_models
-from huracan.sht import MatrixSHT
-from huracan.train.trainer import HuracanTrainer
+from huracan.inference.runner import run_eda
+from huracan.training.phases import fit_phase
 
 
 def test_sht_roundtrip(cfg):
-    nside = cfg["grid"]["nside"]
-    lmax = cfg["grid"]["lmax"]
+    nside = cfg.grid.nside
+    lmax = cfg.grid.lmax
     colat, lon = G.pixel_centers(nside)
     sht = MatrixSHT(
         nside, lmax, np.asarray(colat), np.asarray(lon), cache_dir="data/cache"
@@ -50,9 +50,9 @@ def test_sht_roundtrip(cfg):
 
 def test_model_forward(cfg):
     torch.manual_seed(0)
-    fcst, assim = build_models(cfg, cache_dir="data/cache")
+    fcst, assim = build_models(cfg)
     n_state = fcst.n_state
-    npix = G.npix(cfg["grid"]["nside"])
+    npix = G.npix(cfg.grid.nside)
     B = 2
     x = torch.randn(B, npix, n_state)
     f = torch.randn(B, npix, 3)
@@ -76,7 +76,7 @@ def test_model_forward(cfg):
 def main():
     t0 = time.time()
     cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml")
-    cfg["device"] = "cpu"
+    cfg.device = "cpu"
     torch.set_num_threads(8)
 
     print("== SHT round trip ==")
@@ -86,15 +86,17 @@ def main():
     test_model_forward(cfg)
 
     print("== synthetic data ==")
-    root = Path(cfg["data"]["root"]) / "synthetic"
+    root = Path(cfg.data.root) / "synthetic"
     if not (root / "state.npy").exists():
         generate_synthetic(cfg, root, seed=0)
 
     for phase in ["deterministic", "stochastic", "fcst_ar", "assim", "joint"]:
         print(f"== train phase: {phase} ==")
-        tr = HuracanTrainer(cfg, phase, device="cpu")
-        losses = tr.run(log_every=20, ckpt_every=10**9)
-        losses_f = np.asarray(losses)
+        res = fit_phase(cfg, phase, device="cpu")
+        losses_f = np.asarray(res["losses"])
+        assert len(losses_f) == cfg.train.phases[phase].steps, (
+            f"expected {cfg.train.phases[phase].steps} steps, got {len(losses_f)}"
+        )
         assert np.isfinite(losses_f).all(), f"non-finite loss in {phase}"
         l0, l1 = (
             np.mean(losses_f[: max(5, len(losses_f) // 4)]),
@@ -106,7 +108,7 @@ def main():
         assert l1 < l0 * 3.0, f"loss diverged in {phase}: {l0} -> {l1}"
 
     print("== EDA + metrics ==")
-    res = run_eda(cfg, cfg["output_dir"], device="cpu")
+    res = run_eda(cfg, cfg.output_dir, device="cpu")
     preds = res["preds"].numpy()
     truth = res["truth"].numpy()
     crps = crps_ensemble(preds, truth)

@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .sht import MatrixSHT
+from .sht import SHTBackend
 
 
 # ---------------------------------------------------------------------------
@@ -219,38 +219,42 @@ class SwinFaceBlock(nn.Module):
 
 
 class HuracanSFNOBlock(nn.Module):
-    """x + ISHT(Filter(SHT(x)))  followed by  x + Swin(x), both pre-conditioned
-    with conditional layer norm on the noise embedding."""
+    """x + ISHT(Filter(SHT(x))) followed by x + Swin(x), both pre-conditioned
+    with conditional layer norm on the noise embedding.
+
+    The spherical-harmonic transform is *not* owned by the block: it is a
+    model-level resource passed through ``forward``, so all blocks share one
+    instance (single copy of the basis matrices in memory and in the
+    checkpoint) and the backend is swappable via injection.
+    """
 
     def __init__(
         self,
         dim: int,
         nside: int,
         lmax: int,
-        colat,
-        lon,
         k_filters: int,
         window: int,
         heads: int,
         embed_dim: int,
         mlp_ratio: float,
-        cache_dir: str,
     ):
         super().__init__()
-        self.sht = MatrixSHT(nside, lmax, colat, lon, cache_dir=cache_dir)
         self.filter = CompressedSpectralFilter(dim, dim, lmax, k_filters, embed_dim)
         self.spec_norm = ConditionalLayerNorm(dim, embed_dim)
         self.mixer_norm = ConditionalLayerNorm(dim, embed_dim)
         self.mixer = SwinFaceBlock(dim, nside, window, heads, mlp_ratio)
 
-    def forward(self, x: torch.Tensor, e: torch.Tensor, g: torch.Tensor):
+    def forward(
+        self, x: torch.Tensor, e: torch.Tensor, g: torch.Tensor, sht: SHTBackend
+    ):
         h = self.spec_norm(x, e)
-        c = self.sht(h)
+        c = sht(h)
         c = self.filter(c, g)
-        x = x + self.sht.inverse(c)
+        x = x + sht.inverse(c)
         x = x + self.mixer(self.mixer_norm(x, e))
         return x
 
 
-def _run_block(block, x, e, g):
-    return block(x, e, g)
+def _run_block(block, x, e, g, sht):
+    return block(x, e, g, sht)

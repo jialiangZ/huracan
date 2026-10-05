@@ -98,8 +98,8 @@ def main():
     ap.add_argument("--tmpdir", default="data/wb2_chunks")
     args = ap.parse_args()
 
-    from huracan import grid as G
     from huracan.config import load_config, var_names
+    from huracan.core import grid as G
     from huracan.data.norm import Normalizer
 
     cfg = load_config(args.config)

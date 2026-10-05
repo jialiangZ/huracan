@@ -22,10 +22,24 @@ from __future__ import annotations
 
 import math as _math
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+
+@runtime_checkable
+class SHTBackend(Protocol):
+    """Minimal interface every spherical-harmonic backend must provide.
+
+    ``MatrixSHT`` below satisfies it; a torch-harmonics adapter for
+    nside=64 can be dropped in behind the same two methods.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor: ...
+
+    def inverse(self, c: torch.Tensor) -> torch.Tensor: ...
 
 
 def _assoc_legendre(l: int, m: int, x: np.ndarray) -> np.ndarray:

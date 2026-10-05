@@ -18,7 +18,7 @@ Data Assimilation and Weather Prediction"** (Ni et al., arXiv:2508.18486)。
 
 ## 架构实现（对应论文 Sec. 2.2 / A.2）
 
-`huracan/modules.py` + `huracan/model.py`：
+`huracan/core/modules.py` + `huracan/core/model.py`：
 
 1. **Swin 替换 MLP**（Fig. 2）：每个 SFNO block 的通道混合 MLP 换成
    face-wise Swin Transformer（HEALPix 12 个面各为 n×n 图像，W-MSA +
@@ -34,7 +34,7 @@ Data Assimilation and Weather Prediction"** (Ni et al., arXiv:2508.18486)。
 5. **同化模型 = 预报模型 + 观测编码列**（Sec. 2.3）：编码器第一层新
    增观测输入列随机初始化，其余权重继承随机基模型。
 
-## 训练流程（`huracan/train/trainer.py`，论文 Table 3）
+## 训练流程（`huracan/training/`，Lightning，论文 Table 3）
 
 ```
 deterministic  L1, 无噪声              (基模型)
@@ -96,16 +96,26 @@ CUDA_VISIBLE_DEVICES=3 .venv/bin/python scripts/run_eda.py --config configs/pilo
 
 ```
 huracan/
-  grid.py        HEALPix NESTED 网格、日照 forcing、旋转
-  sht.py         实基球谐变换 (往返误差 ~1e-6)
-  modules.py     压缩谱滤波 / Swin 块 / 条件 LN / 噪声嵌入
-  model.py       HuracanSFNO (预报/同化两种编码器)
-  autoencoder.py 观测谱压缩自编码器 (IR 16921→32, RO 5994→64)
-  data/          数据集、归一化、合成数据、IGRA/ISD 解析
-  train/         阶段训练器 + L1/CRPS 损失
-  inference.py   EDA 循环 + 端到端预报
-  eval/          CRPS/ESSR/RMSE + 记分卡绘图
+  core/            框架无关域层（禁止 import lightning/yaml）
+    grid.py        HEALPix NESTED 网格、日照 forcing、旋转
+    sht.py         实基球谐变换 (往返误差 ~1e-6) + SHTBackend 注入协议
+    modules.py     压缩谱滤波 / Swin 块 / 条件 LN / 噪声嵌入
+    model.py       HuracanSFNO (预报/同化两种编码器, SHT 工厂注入)
+    rollout.py     双时步展开唯一实现 (训练 unroll + EDA 推理共用)
+    losses.py      L1 / fair-CRPS
+    metrics.py     CRPS / ESSR / RMSE
+    io.py          阶段 checkpoint 格式唯一所有者
+    autoencoder.py 观测谱压缩自编码器 (IR 16921→32, RO 5994→64)
+  config/          dataclass 类型化配置 (schema + YAML loader + overrides)
+  data/            数据集(公开 window API)/归一化/合成数据/IGRA/ISD 解析
+  training/        Lightning 层 (唯一 import lightning 处)
+    module.py      HuracanLitModule (manual optimization, joint 双优化器)
+    datamodule.py  LightningDataModule 适配
+    callbacks.py   阶段权重链 / 步数预算 / checkpoint
+    phases.py      fit_phase: 单入口编排 (Table 3 全部 6 阶段)
+  inference/       EDA 循环 + 端到端预报 (EdaRunner, 不摸数据集内部)
+  eval/            记分卡绘图
 configs/         smoke (CPU 冒烟) / pilot (4090 实跑) / paper (论文规模)
-scripts/         下载、预处理、训练、推理入口
-tests/           端到端冒烟测试
+scripts/         下载、预处理、训练、推理入口 (瘦 CLI)
+tests/           端到端冒烟测试 + 单元测试 (配置/rollout等价/SHT注入/io)
 ```

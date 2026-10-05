@@ -1,0 +1,80 @@
+"""Phase-specific callbacks: weight chaining, step budget, checkpointing.
+
+``PhaseInitCallback``  -- on_train_start, load the previous phase's weights
+                          (obs encoder columns stay randomly initialized,
+                          paper Sec 2.3).
+``PhaseRunCallback``   -- stop at exactly ``pc.steps`` optimizer iterations,
+                          save ``ckpt_{phase}.pt`` periodically and at the
+                          end, and write ``losses_{phase}.json``.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import lightning as L
+
+from ..config.schema import HuracanConfig
+from ..core import io
+from ..core.model import load_with_new_columns
+
+
+class PhaseInitCallback(L.Callback):
+    def __init__(self, cfg: HuracanConfig, phase: str, workdir: Path):
+        super().__init__()
+        self.cfg = cfg
+        self.phase = phase
+        self.workdir = Path(workdir)
+
+    def on_train_start(self, trainer, pl_module):
+        pc = self.cfg.train.phases[self.phase]
+        prev = pc.init
+        if not prev:
+            return
+        path = io.phase_path(self.workdir, prev)
+        ck = io.load_phase(self.workdir, prev)
+        src = ck["models"].get("fcst", None) or ck["models"]["assim"]
+
+        if self.phase in ("assim", "joint"):
+            # assim encoder gains obs columns; copy overlapping columns only
+            load_with_new_columns(pl_module.assim, src)
+        elif self.phase in ("stochastic", "fcst_ar", "hybrid"):
+            pl_module.fcst.load_state_dict(src)
+        if self.phase == "joint":
+            fprev = pc.fcst_init or "fcst_ar"
+            fpath = io.phase_path(self.workdir, fprev)
+            ckf = io.load_phase(self.workdir, fprev)
+            pl_module.fcst.load_state_dict(ckf["models"]["fcst"])
+        print(f"[{self.phase}] initialized from {path.name}", flush=True)
+
+
+class PhaseRunCallback(L.Callback):
+    def __init__(
+        self,
+        cfg: HuracanConfig,
+        phase: str,
+        workdir: Path,
+        ckpt_every: int = 2000,
+    ):
+        super().__init__()
+        self.pc = cfg.train.phases[phase]
+        self.phase = phase
+        self.workdir = Path(workdir)
+        self.ckpt_every = ckpt_every
+        self.losses: list[float] = []
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self.losses = pl_module._losses
+        step = pl_module._step
+        done = step >= self.pc.steps
+        if done:
+            trainer.should_stop = True
+        if step % self.ckpt_every == 0 or done:
+            io.save_phase(self.workdir, self.phase, step, pl_module.state_dicts())
+
+    def on_train_end(self, trainer, pl_module):
+        io.save_phase(self.workdir, self.phase, pl_module._step, pl_module.state_dicts())
+        self.losses = pl_module._losses
+        with open(self.workdir / f"losses_{self.phase}.json", "w") as f:
+            json.dump(self.losses, f)

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Train Huracan through the paper's phased schedule.
+"""Train Huracan through the paper's phased schedule (Table 3).
 
 Usage:
   python scripts/train.py --config configs/pilot.yaml --phase all
   python scripts/train.py --config configs/pilot.yaml --phase stochastic
+  python scripts/train.py --config configs/smoke.yaml --phase all \
+      --override train.phases.deterministic.steps=20
 """
 
 from __future__ import annotations
@@ -14,13 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import torch
-
 from huracan.config import load_config
-from huracan.train.trainer import HuracanTrainer
-
-PHASE_ORDER = ["deterministic", "stochastic", "fcst_ar", "assim", "joint"]
-ALL_PHASES = PHASE_ORDER + ["hybrid"]  # hybrid needs ECMWF data; run explicitly
+from huracan.training.phases import ALL_PHASES, fit_phase
 
 
 def main():
@@ -37,33 +34,22 @@ def main():
     )
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
-    for kv in args.override:
-        k, v = kv.split("=", 1)
-        node = cfg
-        keys = k.split(".")
-        for kk in keys[:-1]:
-            node = node[kk]
-        import yaml
-
-        node[keys[-1]] = yaml.safe_load(v)
+    cfg = load_config(args.config, overrides=args.override or None)
     if args.workdir:
-        cfg["output_dir"] = args.workdir
+        cfg.output_dir = args.workdir
 
     phases = ALL_PHASES if args.phase == "all" else args.phase.split(",")
 
-    if cfg["data"]["source"] == "synthetic":
+    if cfg.data.source == "synthetic":
         from huracan.data.synthetic import generate_synthetic
 
-        root = Path(cfg["data"]["root"]) / "synthetic"
+        root = Path(cfg.data.root) / "synthetic"
         if not (root / "state.npy").exists():
-            generate_synthetic(cfg, root, seed=cfg["seed"])
+            generate_synthetic(cfg, root, seed=cfg.seed)
 
-    torch.set_float32_matmul_precision("high")
     for ph in phases:
         print(f"\n===== phase: {ph} =====", flush=True)
-        tr = HuracanTrainer(cfg, ph, device=args.device)
-        tr.run()
+        fit_phase(cfg, ph, device=args.device, workdir=args.workdir)
 
 
 if __name__ == "__main__":

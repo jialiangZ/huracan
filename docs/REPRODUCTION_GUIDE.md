@@ -319,23 +319,25 @@ deterministic ──► stochastic ──┬──► fcst_ar (预报分支) ─
 
 ### 7.2 模块映射
 
-| 论文概念 | 出处 | 仓库实现 |
+| 论文概念 | 出处 | 仓库实现（重构后） |
 |---|---|---|
-| HEALPix 网格 / forcing | Sec 2.2 | `huracan/grid.py`（NESTED 像素中心、insolation、旋转工具） |
-| 球谐变换 | SFNO 需要 | `huracan/sht.py`（`MatrixSHT`，实基最小二乘，往返误差 ~1e-6） |
-| 噪声嵌入 → 条件 LN | Sec 2.2 | `huracan/modules.py`：`NoiseEmbedder`、`ConditionalLayerNorm` |
-| 谱滤波压缩 κ(l)=Σhᵢ(l)κ̃ᵢ | A.2 | `huracan/modules.py`：`CompressedSpectralFilter` |
-| Swin 替换 MLP | Sec 2.2, Fig. 2 | `huracan/modules.py`：`SwinFaceBlock` + `WindowAttention`（W-MSA + SW-MSA + MLP，相对位置偏置） |
-| 完整 SFNO block | Fig. 2 | `huracan/modules.py`：`HuracanSFNOBlock`（x + ISHT(Filter(SHT(CLN(x))))，再 x + Swin(CLN(x))） |
-| 双时步 IO / 残差增量 | Sec 2.2 | `huracan/model.py`：`HuracanSFNO`（`step()` 输出对 x_T 的残差；输出层零初始化） |
-| 同化 = 预报 + 观测列 | Sec 2.3 | `huracan/model.py`：`build_models`（use_obs）；`train/trainer.py`：`load_with_new_columns`（编码器仅新列随机） |
-| 观测自编码器 | A.1 | `huracan/autoencoder.py`：`ObsAutoencoder`（4+4 层，L1，缺失=−5；已在合成数据上冒烟测试，等待真实卫星数据） |
-| 分阶段训练 / Table 3 | Sec 2.3 | `huracan/train/trainer.py`：`HuracanTrainer`（阶段链式 init、cosine+warmup、constant 选项） |
-| L1 / CRPS 损失 | Sec 2.3 | `huracan/train/losses.py`（fair CRPS，M=2 时退化为 mean\|·\|−0.5\|x₁−x₂\|） |
-| 数据集/归一化 | Sec 2.1 | `huracan/data/`：`dataset.py`（连续 2k+2 帧块）、`norm.py`（观测复用状态统计、零填充）、`obs.py`（IGRA/ISD 解析）、`interp.py` |
-| EDA 循环 + 端到端预报 | Sec 3.1 | `huracan/inference.py`：`run_eda`（spin-up → 预报，逐成员独立种子） |
-| CRPS / ESSR / 记分卡 | Sec 3.1 | `huracan/eval/`：`metrics.py`、`scorecard.py` |
-| 入口脚本 | — | `scripts/`：`prepare_era5_wb2.py`、`download_obs.py`、`prepare_obs.py`、`train.py`、`run_eda.py` |
+| HEALPix 网格 / forcing | Sec 2.2 | `huracan/core/grid.py`（NESTED 像素中心、insolation、旋转工具） |
+| 球谐变换 | SFNO 需要 | `huracan/core/sht.py`（`MatrixSHT`，实基最小二乘，往返误差 ~1e-6；`SHTBackend` 协议支持注入 torch-harmonics） |
+| 噪声嵌入 → 条件 LN | Sec 2.2 | `huracan/core/modules.py`：`NoiseEmbedder`、`ConditionalLayerNorm` |
+| 谱滤波压缩 κ(l)=Σhᵢ(l)κ̃ᵢ | A.2 | `huracan/core/modules.py`：`CompressedSpectralFilter` |
+| Swin 替换 MLP | Sec 2.2, Fig. 2 | `huracan/core/modules.py`：`SwinFaceBlock` + `WindowAttention`（W-MSA + SW-MSA + MLP，相对位置偏置） |
+| 完整 SFNO block | Fig. 2 | `huracan/core/modules.py`：`HuracanSFNOBlock`（x + ISHT(Filter(SHT(CLN(x))))，再 x + Swin(CLN(x))） |
+| 双时步 IO / 残差增量 | Sec 2.2 | `huracan/core/model.py`：`HuracanSFNO`（`step()` 输出对 x_T 的残差；输出层零初始化）；展开约定在 `core/rollout.py` 唯一实现 |
+| 同化 = 预报 + 观测列 | Sec 2.3 | `huracan/core/model.py`：`build_models`（use_obs）；`load_with_new_columns`（编码器仅新列随机） |
+| 观测自编码器 | A.1 | `huracan/core/autoencoder.py`：`ObsAutoencoder`（4+4 层，L1，缺失=−5；已在合成数据上冒烟测试，等待真实卫星数据） |
+| 分阶段训练 / Table 3 | Sec 2.3 | `huracan/training/`：`module.py`（`HuracanLitModule`，manual optimization，joint 双优化器）、`phases.py`（`fit_phase` 单入口）、`callbacks.py`（阶段权重链）、`datamodule.py`、`schedule.py`（cosine/constant + warmup） |
+| L1 / CRPS 损失 | Sec 2.3 | `huracan/core/losses.py`（fair CRPS，M=2 时退化为 mean\|·\|−0.5\|x₁−x₂\|） |
+| 数据集/归一化 | Sec 2.1 | `huracan/data/`：`dataset.py`（连续 2k+2 帧块 + 公开 `window()` API）、`norm.py`（观测复用状态统计、零填充）、`obs.py`（IGRA/ISD 解析）、`interp.py` |
+| EDA 循环 + 端到端预报 | Sec 3.1 | `huracan/inference/runner.py`：`EdaRunner` + `run_eda`（spin-up → 预报，逐成员独立种子；权重经 `core/io.py` 加载） |
+| CRPS / ESSR / 记分卡 | Sec 3.1 | `huracan/core/metrics.py`、`huracan/eval/scorecard.py` |
+| 入口脚本 | — | `scripts/`：`prepare_era5_wb2.py`、`download_obs.py`、`prepare_obs.py`、`train.py`（瘦 CLI → `fit_phase`）、`run_eda.py` |
+| 类型化配置 | — | `huracan/config/`：`schema.py`（dataclass，严格校验）、`loader.py`（YAML + overrides） |
+| 冒烟/单元测试 | — | `tests/test_smoke.py`（全链路）、`tests/test_units.py`（配置解析、rollout 与原 trainer 语义逐位等价、SHT 注入/共享、checkpoint io） |
 
 ### 7.3 已知偏差与简化（诚实清单）
 

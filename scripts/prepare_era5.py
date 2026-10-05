@@ -25,8 +25,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from huracan import grid as G
 from huracan.config import load_config, var_names
+from huracan.core import grid as G
 from huracan.data.interp import LatLonBilinear
 from huracan.data.norm import Normalizer
 
