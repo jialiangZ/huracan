@@ -1,0 +1,49 @@
+# Smoke-test configuration: tiny synthetic problem, runs end-to-end
+# (all 6 training phases + EDA + metrics) on CPU in a few minutes.
+run_name: smoke
+output_dir: runs/smoke
+device: cpu
+grid:
+  nside: 8          # 768 pixels (~7.3 deg)
+  lmax: 12
+model:
+  hidden: 48
+  blocks: 2
+  k_filters: 4
+  swin_window: 4
+  heads: 2
+  mlp_ratio: 2.0
+  noise_dim: 4
+  noise_embed_dim: 24
+data:
+  source: synthetic
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [300, 500, 850]      # 15 upper-air channels
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+  train_period: [0, 300]
+  val_period: [300, 380]
+  synthetic:
+    channels: 22
+    steps: 380
+train:
+  batch_size: 4
+  ensemble: 2
+  num_workers: 0
+  phases:
+    deterministic: {steps: 60, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 40, lr: 3e-4, loss: crps, rollout: 0, noise: true, init: deterministic}
+    fcst_ar:     {steps: 15, lr: 1e-5, loss: crps, rollout: 2, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 20, lr: 1e-4, loss: crps, rollout: 2, noise: true,
+                  obs: true, init: stochastic}
+    joint:       {steps: 10, lr: 1e-5, loss: crps, rollout_assim: 2,
+                  rollout_fcst: 2, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar}
+eval:
+  members: 3
+  spinup_steps: 6
+  lead_steps: 4

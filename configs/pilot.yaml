@@ -1,0 +1,52 @@
+# Pilot reproduction: real ERA5 + IGRA/ISD observations at nside=16 (~3.7 deg).
+# Sized for a single RTX 4090 (24 GB): roughly 4-6 GPU-hours for all phases.
+run_name: pilot
+output_dir: runs/pilot
+device: cuda
+grid:
+  nside: 16         # 3072 pixels
+  lmax: 32
+model:
+  hidden: 192
+  blocks: 6
+  k_filters: 8       # paper: 15
+  swin_window: 8
+  heads: 3
+  mlp_ratio: 4.0
+  noise_dim: 8
+  noise_embed_dim: 64
+  degree_freqs: 16
+data:
+  source: era5
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+    surface_vars: [2t, 2d, 10u, 10v, msl]
+  # 4 years x 1460 six-hourly steps; train 2010-2012, validate 2013
+  train_period: [0, 4380]
+  val_period: [4380, 5836]
+train:
+  batch_size: 8
+  ensemble: 2
+  num_workers: 4
+  phases:
+    deterministic: {steps: 40000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 15000, lr: 2e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 3000, lr: 3e-6, loss: crps, rollout: 6, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 5000, lr: 2e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic}
+    joint:       {steps: 2000, lr: 3e-6, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, batch_size: 4}
+    hybrid:      {steps: 1000, lr: 3e-6, loss: crps, rollout: 6, noise: true,
+                  schedule: constant, init: fcst_ar}
+eval:
+  members: 8         # paper: 48
+  spinup_steps: 120  # 60 days (paper: >= 3 months)
+  lead_steps: 20     # 10 days

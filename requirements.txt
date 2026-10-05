@@ -1,0 +1,15 @@
+torch>=2.4
+numpy
+scipy
+einops
+pyyaml
+matplotlib
+tqdm
+requests
+astropy-healpix
+xarray
+cfgrib
+eccodes
+cdsapi
+netcdf4
+pandas

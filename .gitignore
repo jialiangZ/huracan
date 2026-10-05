@@ -1,0 +1,14 @@
+# environments / caches
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# large data & run artifacts (regenerable)
+data/
+runs/
+runs_pilot_train.log
+
+# tooling
+.opencode/
+.lightning/
