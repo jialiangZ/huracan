@@ -1,0 +1,48 @@
+# =============================================================================
+# Documentation of PAPER-EXPLICIT constraints (arXiv:2508.18486v2).
+#
+# This file is a *reference sheet*, not a run config: it lists every value
+# the paper states verbatim, so it can be diffed against any real config
+# (pilot.yaml / scaleup_inferred.yaml) to see exactly where repo choices
+# creep in.  It is loadable (everything else falls back to schema defaults)
+# but you almost certainly want scaleup_inferred.yaml for training.
+#
+# Resolution semantics (paper Sec. 2.2 / 2.3):
+#   input  (T-6h, T) -> output (T+6h, T+12h); one AR call ADVANCES 12 h and
+#   produces TWO 6-hourly fields; 6 calls = 3 days, 8 calls = 4 days,
+#   10-day forecast = 20 calls = 40 fields (+ lead-0 analysis = 41 leads,
+#   matching the 697 = 17 x 41 scorecard combinations).
+# =============================================================================
+run_name: paper_constraints
+
+grid:
+  lmax: 179            # [PAPER] A.2: "1-degree resolution implies L = 179"
+  # nlat/nlon at 1 degree: [INFERRED] 180 x 360 -- the paper never names the
+  # grid family (no HEALPix anywhere in the text); see guide Sec. 7.
+
+model:
+  k_filters: 15        # [PAPER] A.2: k = 15 (12x parameter reduction)
+  # state channels: 72 = 5 vars x 13 levels + 7 surface  [PAPER] Table 2
+  # forcing: insolation + z + lsm = 3                    [PAPER] Table 2
+  # obs: text says 269/time step; Table 2 sums to 334 (unresolved in paper)
+
+train:
+  batch_size: 16       # [PAPER] A.3
+  ensemble: 2          # [PAPER] A.3 (stochastic training members)
+  phases:
+    # [PAPER] Table 3 -- data / max LR / schedule / steps
+    deterministic: {steps: 347000, lr: 5e-4, loss: l1,   schedule: cosine}
+    stochastic:    {steps: 149000, lr: 2e-4, loss: crps, schedule: cosine, noise: true}
+    fcst_ar:       {steps: 14000,  lr: 3e-6, loss: crps, schedule: constant, rollout: 6, noise: true}
+    assim:         {steps: 46000,  lr: 2e-4, loss: crps, schedule: cosine,   rollout: 8, noise: true, obs: true}
+    joint:         {steps: 13000,  lr: 3e-6, loss: crps, schedule: cosine,   rollout_assim: 8, rollout_fcst: 8, noise: true, obs: true}
+    hybrid:        {steps: 2700,   lr: 3e-6, loss: crps, schedule: constant, rollout: 6, noise: true}
+    # phase data [PAPER] Table 3: base 1979-2014 ERA5; assim/joint 2010-2022
+    # ERA5+Obs; hybrid 2018-2022 ECMWF HRES.
+    # rollout in CALLS (one call = 12 h): 6 -> 3 days, 8 -> 4 days [PAPER].
+
+eval:
+  members: 48          # [PAPER] Sec 3.1
+  spinup_days: 92      # [PAPER] Sec 3.1: "at least three months" from
+                       # ERA5 2023-10-01 00 UTC -> 92 d = 184 AR calls
+  lead_days: 10        # [PAPER] Sec 3.1

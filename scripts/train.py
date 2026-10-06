@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from huracan.config import load_config
+from huracan.config import channel_report, load_config
 from huracan.training.phases import ALL_PHASES, fit_phase
 
 
@@ -37,6 +37,10 @@ def main():
     cfg = load_config(args.config, overrides=args.override or None)
     if args.workdir:
         cfg.output_dir = args.workdir
+
+    print(channel_report(cfg))
+    print("\n(provenance: PAPER vs REPO/INFERRED choices are registered in "
+          "huracan/config/provenance.py)\n")
 
     phases = ALL_PHASES if args.phase == "all" else args.phase.split(",")
 

@@ -26,7 +26,7 @@ import pandas as pd
 import xarray as xr
 
 from huracan.config import load_config, var_names
-from huracan.core import grid as G
+from huracan.core.grid import grid_from_cfg
 from huracan.data.interp import LatLonBilinear
 from huracan.data.norm import Normalizer
 
@@ -79,22 +79,21 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    nside = cfg["grid"]["nside"]
-    colat, lon = G.pixel_centers(nside)
-    colat, lon = np.asarray(colat), np.asarray(lon)
-    outdir = Path(cfg["data"]["root"]) / "era5"
+    grid = grid_from_cfg(cfg.grid)
+    colat, lon = grid.colat, grid.lon_flat
+    outdir = Path(cfg.data.root) / "era5"
     outdir.mkdir(parents=True, exist_ok=True)
     raw = Path(args.rawdir)
 
     names = var_names(cfg)
     names_idx = {n: i for i, n in enumerate(names)}
-    levels = cfg["data"]["variables"]["levels"]
+    levels = cfg.data.variables.levels
 
     # grid geometry from the first file
     probe = xr.open_dataset(raw / f"era5_pl_{args.years[0]}.grib", engine="cfgrib")
     interp = LatLonBilinear(probe.latitude.values, probe.longitude.values, colat, lon)
     probe.close()
-    npix = G.npix(nside)
+    npix = grid.npix
 
     all_times, all_arr = [], []
     for year in args.years:

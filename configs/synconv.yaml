@@ -5,13 +5,15 @@ run_name: synconv
 output_dir: runs/synconv
 device: cuda
 grid:
-  nside: 8
-  lmax: 12
+  nlat: 16          # ~11 deg; exact quadrature grid with lmax = 15
+  nlon: 32
+  lmax: 15
 model:
   hidden: 64
   blocks: 3
   k_filters: 6
-  swin_window: 4
+  swin_window_lat: 4
+  swin_window_lon: 8
   heads: 2
   mlp_ratio: 2.0
   noise_dim: 8
@@ -47,5 +49,5 @@ train:
                   fcst_init: fcst_ar}
 eval:
   members: 4
-  spinup_steps: 40
-  lead_steps: 12
+  spinup_days: 20   # 40 AR calls x 12 h (matches the previous 40 steps)
+  lead_days: 6      # 12 calls, 24 fields

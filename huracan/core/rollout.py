@@ -1,4 +1,12 @@
-"""The single source of truth for the two-timestep unroll convention.
+"""The single source of truth for the two-timestep unroll convention and
+the temporal semantics of the whole system.
+
+Time semantics (paper Sec. 2.2/2.3, guide Sec. 1.2 -- strongly constrained
+by "6-step rollout = 3 days" and "8-step rollout = 4 days"):
+  * every model call ingests (T-6h, T) and emits (T+6h, T+12h);
+  * one autoregressive call therefore ADVANCES THE TRAJECTORY BY 12 h
+    and produces TWO 6-hourly output fields;
+  * 6 calls = 72 h = 3 days, 8 calls = 96 h = 4 days, 20 calls = 240 h.
 
 ``unroll``       -- training-time rollout (teacher-forced blocks, ensemble dim)
 ``spinup_and_forecast`` -- EDA inference (spin-up cycling then forecast)
@@ -11,6 +19,27 @@ convention (obs at ``obs[:, 2j]``/``obs[:, 2j+1]``, forcing likewise).
 from __future__ import annotations
 
 import torch
+
+# --- temporal constants (single source of truth) --------------------------
+OUTPUT_INTERVAL_HOURS = 6   # spacing between output fields           [PAPER]
+OUTPUTS_PER_CALL = 2        # two 6-hourly fields per call            [PAPER]
+AR_ADVANCE_HOURS = 12       # trajectory advance per model call  [INFERRED,
+                            # fixed by 6-step=3d / 8-step=4d]
+
+
+def calls_for(hours: float) -> int:
+    """Number of autoregressive model calls covering ``hours``."""
+    n = hours / AR_ADVANCE_HOURS
+    if abs(n - round(n)) > 1e-6:
+        raise ValueError(
+            f"{hours}h is not a multiple of the {AR_ADVANCE_HOURS}h AR advance"
+        )
+    return int(round(n))
+
+
+def outputs_for(hours: float) -> int:
+    """Number of 6-hourly output fields covering ``hours``."""
+    return calls_for(hours) * OUTPUTS_PER_CALL
 
 
 def member_noise(model, B: int, npix: int, device, generator=None) -> torch.Tensor:

@@ -1,20 +1,25 @@
 # Smoke-test configuration: tiny synthetic problem, runs end-to-end
 # (all 6 training phases + EDA + metrics) on CPU in a few minutes.
+# Grid: exact Gauss-Legendre 16 x 32 with lmax = 15 (nlat = lmax+1,
+# nlon = 2*lmax+2 -> SHT quadrature is exact).
 run_name: smoke
 output_dir: runs/smoke
 device: cpu
 grid:
-  nside: 8          # 768 pixels (~7.3 deg)
-  lmax: 12
+  nlat: 16
+  nlon: 32
+  lmax: 15
 model:
   hidden: 48
   blocks: 2
   k_filters: 4
-  swin_window: 4
+  swin_window_lat: 4     # 16 / 4 = 4 windows per column
+  swin_window_lon: 8     # 32 / 8 = 4 windows per row
   heads: 2
   mlp_ratio: 2.0
   noise_dim: 4
   noise_embed_dim: 24
+  prediction: residual    # [REPO] guide Sec 8.6
 data:
   source: synthetic
   root: data
@@ -38,12 +43,14 @@ train:
     stochastic:  {steps: 40, lr: 3e-4, loss: crps, rollout: 0, noise: true, init: deterministic}
     fcst_ar:     {steps: 15, lr: 1e-5, loss: crps, rollout: 2, noise: true,
                   schedule: constant, init: stochastic}
-    assim:       {steps: 20, lr: 1e-4, loss: crps, rollout: 2, noise: true,
+    assim:       {steps: 15, lr: 3e-4, loss: crps, rollout: 2, noise: true,
                   obs: true, init: stochastic}
-    joint:       {steps: 10, lr: 1e-5, loss: crps, rollout_assim: 2,
+    joint:       {steps: 12, lr: 1e-5, loss: crps, rollout_assim: 2,
                   rollout_fcst: 2, noise: true, obs: true, init: assim,
                   fcst_init: fcst_ar}
+    hybrid:      {steps: 8, lr: 1e-5, loss: crps, rollout: 2, noise: true,
+                  schedule: constant, init: fcst_ar}
 eval:
-  members: 3
-  spinup_steps: 6
-  lead_steps: 4
+  members: 4
+  spinup_days: 2     # 4 AR calls x 12 h
+  lead_days: 2       # 4 outputs-days -> 4 calls, 8 fields

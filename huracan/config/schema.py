@@ -23,22 +23,37 @@ class ConfigError(ValueError):
 
 @dataclass
 class GridCfg:
-    nside: int = 16
-    lmax: int = 32
+    """Gauss-Legendre x equispaced regular grid [INFERRED].
+
+    The paper fixes 1-degree output and L=179 (A.2) but never names the grid
+    family (guide Sec. 7); nlat/nlon at paper scale would be 180/360."""
+
+    nlat: int = 48
+    nlon: int = 96
+    lmax: int = 47
 
 
 @dataclass
 class ModelCfg:
-    hidden: int = 192
-    blocks: int = 6
-    k_filters: int = 8
-    swin_window: int = 8
-    heads: int = 3
-    mlp_ratio: float = 4.0
-    noise_dim: int = 8
-    noise_embed_dim: int = 64
-    degree_freqs: int = 16
-    grad_checkpoint: bool = True
+    hidden: int = 192                 # [REPO] not published
+    blocks: int = 6                   # [REPO] not published
+    k_filters: int = 8                # paper A.2: k=15 at scale
+    swin_window_lat: int = 6          # [REPO] not published; must divide nlat
+    swin_window_lon: int = 12         # [REPO] not published; must divide nlon
+    heads: int = 3                    # [REPO] not published
+    mlp_ratio: float = 4.0            # [REPO] not published
+    noise_dim: int = 8                # [REPO] not published
+    noise_embed_dim: int = 64         # [REPO] not published
+    degree_freqs: int = 16            # [REPO] not published
+    grad_checkpoint: bool = True      # [REPO] engineering choice
+    prediction: str = "residual"      # [REPO] residual|direct (guide Sec 8.6)
+
+    def __post_init__(self):
+        if self.prediction not in ("residual", "direct"):
+            raise ValueError(
+                f"model.prediction must be 'residual' or 'direct', "
+                f"got {self.prediction!r}"
+            )
 
 
 @dataclass
@@ -159,10 +174,24 @@ class TrainCfg:
 
 @dataclass
 class EvalCfg:
-    members: int = 8
-    spinup_steps: int = 120
-    lead_steps: int = 20
+    """EDA / forecast experiment sizing, in calendar units [PAPER Sec. 3.1].
+
+    The spin-up length is deliberately expressed in *days* (calendar-driven,
+    guide Sec. 12.3): 3 months from 2023-10-01 is ~92 days, i.e. 184
+    autoregressive calls at 12 h per call -- never a hard-coded loop count."""
+
+    members: int = 8                  # paper: 48
+    spinup_days: float = 60.0         # paper: at least 3 months (~92 d)
+    lead_days: float = 10.0           # paper: 10 lead days
     start_index: int | None = None
+
+    # one AR call advances 12 h (core.rollout.AR_ADVANCE_HOURS); schema must
+    # stay importable from core, so the constant is restated here
+    def spinup_calls(self) -> int:
+        return int(round(self.spinup_days * 24 / 12))
+
+    def lead_calls(self) -> int:
+        return int(round(self.lead_days * 24 / 12))
 
 
 # ---------------------------------------------------------------------------

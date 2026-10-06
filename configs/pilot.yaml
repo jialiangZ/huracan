@@ -1,21 +1,30 @@
-# Pilot reproduction: real ERA5 + IGRA/ISD observations at nside=16 (~3.7 deg).
-# Sized for a single RTX 4090 (24 GB): roughly 4-6 GPU-hours for all phases.
+# Pilot reproduction: real ERA5 + IGRA/ISD observations on a regular
+# Gauss-Legendre 48 x 96 grid (~3.75 deg, 4608 pixels; lmax = 47 gives an
+# EXACT SHT quadrature grid).  Sized for a single RTX 4090 (24 GB):
+# roughly 4-8 GPU-hours for all phases.
+#
+# Provenance: grid family is [INFERRED] (paper says only "1 degree, L=179");
+# model width/depth/window are [REPO]; training steps are pilot-reduced from
+# Table 3.  Run `python scripts/train.py` to see the full provenance table.
 run_name: pilot
 output_dir: runs/pilot
 device: cuda
 grid:
-  nside: 16         # 3072 pixels
-  lmax: 32
+  nlat: 48
+  nlon: 96
+  lmax: 47
 model:
   hidden: 192
   blocks: 6
   k_filters: 8       # paper: 15
-  swin_window: 8
+  swin_window_lat: 6
+  swin_window_lon: 12
   heads: 3
   mlp_ratio: 4.0
   noise_dim: 8
   noise_embed_dim: 64
   degree_freqs: 16
+  prediction: residual   # [REPO] guide Sec 8.6
 data:
   source: era5
   root: data
@@ -47,6 +56,6 @@ train:
     hybrid:      {steps: 1000, lr: 3e-6, loss: crps, rollout: 6, noise: true,
                   schedule: constant, init: fcst_ar}
 eval:
-  members: 8         # paper: 48
-  spinup_steps: 120  # 60 days (paper: >= 3 months)
-  lead_steps: 20     # 10 days
+  members: 8          # paper: 48
+  spinup_days: 60     # paper: >= 3 months (~92 d = 184 AR calls)
+  lead_days: 10       # 20 AR calls, 40 six-hourly fields

@@ -1,68 +1,102 @@
-"""HEALPix grid utilities (NESTED ordering) and analytic forcings.
+"""Regular spherical grid: Gauss-Legendre latitudes x equispaced longitudes.
 
-We use NESTED ordering so pixels reshape cleanly into 12 faces of
-nside x nside images -- required by the face-wise Swin Transformer.
+Provenance (docs/HURACAN_REPRODUCTION_GUIDE_REVISED.md, Sec. 7): the paper
+specifies 1-degree resolution and L=179 (Appendix A.2) but never names a
+grid family -- HEALPix appears nowhere in the text, and the exact node
+layout stays [OPEN].  This module implements the high-confidence inference:
+a regular lat-lon grid compatible with standard SHT libraries.
+
+Why Gauss-Legendre latitudes rather than equiangular:
+  * nlat = lmax+1 Gauss nodes make the SHT quadrature *exact* for degree
+    lmax (an equiangular grid would need nlat ~= 2*lmax for the same);
+  * nlon >= 2*lmax+1 makes the longitude sum exact;
+  * it matches the native layout of torch-harmonics, the planned backend at
+    paper scale (180x360/lmax=179 is exactly of this form).
+
+Pixel ordering is row-major over (lat, lon): north -> south, lon in [0, 2pi).
+A flat (npix,) field therefore reshapes losslessly to (nlat, nlon) images,
+which is what the lat-lon Swin windows consume.
 """
 
 from __future__ import annotations
 
-import math
+from dataclasses import dataclass
 
 import numpy as np
 
-
-def nside_is_valid(nside: int) -> bool:
-    return nside >= 1 and (nside & (nside - 1)) == 0
+from ..config.schema import GridCfg
 
 
-def npix(nside: int) -> int:
-    return 12 * nside * nside
+@dataclass(frozen=True)
+class SphericalGrid:
+    nlat: int
+    nlon: int
+    lmax: int
+    lat: np.ndarray  # (nlat,) radians, descending (north -> south)
+    lon: np.ndarray  # (nlon,) radians in [0, 2*pi)
+    w_lat: np.ndarray  # (nlat,) Gauss weights over sin(lat), sum == 2
+
+    # -- geometry -----------------------------------------------------------
+    @property
+    def npix(self) -> int:
+        return self.nlat * self.nlon
+
+    @property
+    def colat(self) -> np.ndarray:
+        """(npix,) colatitudes, row-major over (lat, lon)."""
+        return np.repeat(np.pi / 2 - self.lat, self.nlon)
+
+    @property
+    def lon_flat(self) -> np.ndarray:
+        """(npix,) longitudes, row-major over (lat, lon)."""
+        return np.tile(self.lon, self.nlat)
+
+    @property
+    def pixel_weights(self) -> np.ndarray:
+        """(npix,) area weights normalized to mean 1.
+
+        Unlike HEALPix, a lat-lon grid is not equal-area: pixels shrink
+        cos(lat) towards the poles, so spatial averages must be weighted
+        (used by core.metrics)."""
+        w = np.repeat(self.w_lat, self.nlon) * (2 * np.pi / self.nlon)
+        return w / w.mean()
+
+    # -- validation -----------------------------------------------------------
+    def validate(self) -> "SphericalGrid":
+        if self.nlat < self.lmax + 1:
+            raise ValueError(
+                f"exact Gauss SHT needs nlat >= lmax+1 (got nlat={self.nlat}, "
+                f"lmax={self.lmax})"
+            )
+        if self.nlon < 2 * self.lmax + 1:
+            raise ValueError(
+                f"exact longitude sum needs nlon >= 2*lmax+1 (got nlon={self.nlon}, "
+                f"lmax={self.lmax})"
+            )
+        return self
 
 
-def pixel_centers(nside: int):
-    """NESTED-order pixel centers as (colat, lon) in radians, shape (npix,).
+def gauss_grid(nlat: int, nlon: int, lmax: int | None = None) -> SphericalGrid:
+    """Gauss-Legendre x equispaced grid with exact SHT quadrature.
 
-    Uses astropy-healpix. Results are cached to <cache_dir>/grid_n{n}.npz.
-    """
-    from astropy_healpix import HEALPix
-
-    hp = HEALPix(nside=nside, order="nested")
-    lon, lat = hp.healpix_to_lonlat(np.arange(npix(nside)))
-    return (np.pi / 2 - np.asarray(lat.rad)), np.asarray(lon.rad)
-
-
-def nest_deinterleave(nside: int):
-    """Return index arrays (face, y, x) for each NESTED pixel.
-
-    nested pixel p = face*nside^2 + interleave_bits(x, y)  (x fastest).
-    """
-    assert nside_is_valid(nside), "nside must be a power of 2"
-    within = np.arange(nside * nside)
-    x = np.zeros(within.size, dtype=np.int64)
-    y = np.zeros(within.size, dtype=np.int64)
-    for b in range(int(math.log2(nside))):
-        x |= ((within >> (2 * b)) & 1) << b
-        y |= ((within >> (2 * b + 1)) & 1) << b
-    face = np.arange(12, dtype=np.int64).repeat(nside * nside)
-    xx = np.tile(x, 12)
-    yy = np.tile(y, 12)
-    return face, yy, xx
+    lmax defaults to the largest exactly-representable degree:
+    min(nlat - 1, (nlon - 1) // 2)."""
+    if lmax is None:
+        lmax = min(nlat - 1, (nlon - 1) // 2)
+    x, w = np.polynomial.legendre.leggauss(nlat)  # x = sin(lat), ascending
+    lat = np.arcsin(x[::-1])  # north -> south
+    w_lat = w[::-1]
+    lon = 2 * np.pi * np.arange(nlon) / nlon
+    return SphericalGrid(int(nlat), int(nlon), int(lmax), lat, lon, w_lat).validate()
 
 
-def nest_to_face_perm(nside: int) -> np.ndarray:
-    """Permutation such that  x_faces = x_nested[..., perm, :]  reshapes to
-    (..., 12, nside, nside, C) with (face, y, x) row-major layout."""
-    face, y, x = nest_deinterleave(nside)
-    return face * nside * nside + y * nside + x
+def grid_from_cfg(gcfg: GridCfg) -> SphericalGrid:
+    return gauss_grid(gcfg.nlat, gcfg.nlon, gcfg.lmax)
 
 
-def face_to_nest_perm(nside: int) -> np.ndarray:
-    return np.argsort(nest_to_face_perm(nside))
-
-
-def pixel_area_weights(nside: int) -> np.ndarray:
-    """HEALPix pixels are equal area -> uniform weights (ones)."""
-    return np.ones(npix(nside), dtype=np.float64)
+# ---------------------------------------------------------------------------
+# analytic forcings / geometry helpers (grid-agnostic, operate on colat/lon)
+# ---------------------------------------------------------------------------
 
 
 def solar_declination(day_of_year: np.ndarray) -> np.ndarray:

@@ -99,21 +99,20 @@ def main():
     args = ap.parse_args()
 
     from huracan.config import load_config, var_names
-    from huracan.core import grid as G
+    from huracan.core.grid import grid_from_cfg
     from huracan.data.norm import Normalizer
 
     cfg = load_config(args.config)
-    nside = cfg["grid"]["nside"]
-    colat, lon = G.pixel_centers(nside)
-    colat, lon = np.asarray(colat), np.asarray(lon)
-    npix = G.npix(nside)
-    levels = cfg["data"]["variables"]["levels"]
+    grid = grid_from_cfg(cfg.grid)
+    colat, lon = grid.colat, grid.lon_flat
+    npix = grid.npix
+    levels = cfg.data.variables.levels
     names = var_names(cfg)
     name_idx = {n: i for i, n in enumerate(names)}
 
     tmp = Path(args.tmpdir)
     tmp.mkdir(parents=True, exist_ok=True)
-    outdir = Path(cfg["data"]["root"]) / "era5"
+    outdir = Path(cfg.data.root) / "era5"
     outdir.mkdir(parents=True, exist_ok=True)
 
     # ---------------- parallel fetch ------------------------------------

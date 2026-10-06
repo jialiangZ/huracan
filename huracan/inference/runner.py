@@ -73,13 +73,13 @@ class EdaRunner:
         )
         truth = state[2 * spinup + 2 : 2 * spinup + 2 + 2 * lead].cpu()
         return {
-            "preds": preds,  # (M, 2F, npix, C) normalized
+            "preds": preds,  # (M, 2F, npix, C) normalized 6-hourly fields
             "truth": truth,  # (2F, npix, C)
             "spinup_end": spinup_end,  # (M, npix, C)
             "t0": t0,
             "members": members,
-            "spinup_steps": spinup,
-            "lead_steps": lead,
+            "spinup_calls": spinup,   # AR calls, 12 h each
+            "lead_calls": lead,
         }
 
 
@@ -90,10 +90,14 @@ def run_eda(
     start_index: int | None = None,
     data_dir: str | Path | None = None,
 ) -> dict:
-    """Full experiment entry point (keeps the original call signature)."""
+    """Full experiment entry point (keeps the original call signature).
+
+    Spin-up and lead time are calendar-driven (guide Sec. 12.3): days from
+    the config are converted to AR calls at 12 h per call, so "3 months"
+    can never silently become a wrong loop count again."""
     workdir = Path(workdir)
     ecfg = cfg.eval
-    S, F = ecfg.spinup_steps, ecfg.lead_steps
+    S, F = ecfg.spinup_calls(), ecfg.lead_calls()
 
     runner = EdaRunner.from_checkpoints(cfg, workdir, device=device)
     ds = SphereDataset(cfg, "val", rollout=S + F, data_dir=data_dir)
@@ -109,5 +113,7 @@ def run_eda(
         spinup=S,
         lead=F,
     )
+    res["spinup_days"] = ecfg.spinup_days
+    res["lead_days"] = ecfg.lead_days
     torch.save(res, workdir / "eda_result.pt")
     return res

@@ -1,4 +1,4 @@
-"""Spherical harmonic transform (SHT) on the HEALPix NESTED grid.
+"""Spherical harmonic transform (SHT) on the regular Gauss lat-lon grid.
 
 Design
 ------
@@ -6,7 +6,12 @@ We use the *real* harmonic basis
     g_{l,0}   = N_lm P_l^m(cos t)                  (m = 0)
     g^c_{lm}  = sqrt(2) N_lm P_l^m(cos t) cos(m p) (m > 0)
     g^s_{lm}  = sqrt(2) N_lm P_l^m(cos t) sin(m p)
-and solve a real least-squares problem (dense pinv) for the coefficients.
+with columns orthonormal under int g g' dOmega = delta.  On the exact
+Gauss-Legendre grid (nlat >= lmax+1, nlon >= 2*lmax+1, see core.grid) the
+forward transform is the *quadrature* sum
+    coeff_c = sum_i  w_i * B[i, c] * f[i]
+which is exact -- no least-squares pseudo-inverse is involved.
+
 Coefficients are stored in a complex (L, M) = (lmax+1, lmax+1) layout as
     c[l, 0] = alpha_{l0}
     c[l, m] = (alpha^c_{lm} - i alpha^s_{lm}) / sqrt(2)   (m > 0)
@@ -14,8 +19,10 @@ so that the inverse transform is  x = Re( sum_m w_m A_m c_m )  with
 w_0 = 1, w_{m>0} = 2, and real-linear channel mixing of c preserves the
 structure (exactly what the compressed spectral filter applies).
 
-The dense backend is exact and fast for the reduced-resolution pilot
-(nside <= 32); for nside=64 swap in torch-harmonics behind the same API.
+The dense-matrix backend is exact and fast for smoke/pilot scales
+(npix <= ~5k).  At paper scale (180x360, lmax=179) the basis matrix alone
+would be ~17 GB, so a torch-harmonics adapter must be injected through the
+same ``SHTBackend`` protocol (see HuracanSFNO(sht_factory=...)).
 """
 
 from __future__ import annotations
@@ -28,13 +35,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from .grid import SphericalGrid
+
 
 @runtime_checkable
 class SHTBackend(Protocol):
     """Minimal interface every spherical-harmonic backend must provide.
 
-    ``MatrixSHT`` below satisfies it; a torch-harmonics adapter for
-    nside=64 can be dropped in behind the same two methods.
+    ``MatrixSHT`` below satisfies it; torch-harmonics can be dropped in
+    behind the same two methods for paper-scale grids.
     """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor: ...
@@ -65,9 +74,9 @@ def _assoc_legendre(l: int, m: int, x: np.ndarray) -> np.ndarray:
     return pmmp1
 
 
-def build_real_basis(nside: int, lmax: int, colat: np.ndarray, lon: np.ndarray):
-    """Real basis matrix B (npix, L^2) with column layout per degree l:
-    [m=0] then for m=1..l: [cos, sin].  Also returns index tables."""
+def build_real_basis(lmax: int, colat: np.ndarray, lon: np.ndarray):
+    """Real orthonormal basis matrix B (npix, n_real) with column layout per
+    degree l: [m=0] then for m=1..l: [cos, sin].  Also returns index tables."""
     cols, lidx, midx, kind = [], [], [], []  # kind: 0=m0, 1=cos, 2=sin
     ct = np.cos(colat)
     for l in range(lmax + 1):
@@ -99,26 +108,34 @@ def build_real_basis(nside: int, lmax: int, colat: np.ndarray, lon: np.ndarray):
 
 
 class MatrixSHT(nn.Module):
-    """Real-basis least-squares SHT with complex (L, M) coefficient layout."""
+    """Exact real-basis SHT on the Gauss grid, complex (L, M) layout.
 
-    def __init__(
-        self, nside: int, lmax: int, colat, lon, cache_dir: str | Path = "data/cache"
-    ):
+    forward:  x (B, npix, C) real  -> c (B, L, M, C) complex
+    inverse:  c (B, L, M, C)       -> x (B, npix, C) real
+    """
+
+    def __init__(self, grid: SphericalGrid, cache_dir: str | Path = "data/cache"):
         super().__init__()
-        self.nside, self.lmax = nside, lmax
-        self.L, self.M = lmax + 1, lmax + 1
+        grid.validate()
+        self.grid = grid
+        self.lmax = grid.lmax
+        self.L, self.M = grid.lmax + 1, grid.lmax + 1
 
         cache = Path(cache_dir)
         cache.mkdir(parents=True, exist_ok=True)
-        f = cache / f"sht_real_n{nside}_l{lmax}.npz"
+        f = cache / f"sht_gauss_{grid.nlat}x{grid.nlon}_l{grid.lmax}.npz"
         if f.exists():
             z = np.load(f)
-            B, B_pinv = z["B"], z["pinv"]
-            lidx, midx, kind = z["lidx"], z["midx"], z["kind"]
+            B, Fwd, lidx, midx, kind = (
+                z["B"], z["Fwd"], z["lidx"], z["midx"], z["kind"]
+            )
         else:
-            B, (lidx, midx, kind) = build_real_basis(nside, lmax, colat, lon)
-            B_pinv = np.linalg.pinv(B)
-            np.savez_compressed(f, B=B, pinv=B_pinv, lidx=lidx, midx=midx, kind=kind)
+            colat, lon = grid.colat, grid.lon_flat
+            B, (lidx, midx, kind) = build_real_basis(grid.lmax, colat, lon)
+            # exact quadrature: total weight per pixel = w_lat * dlon
+            w = np.repeat(grid.w_lat, grid.nlon) * (2 * np.pi / grid.nlon)
+            Fwd = (w[:, None] * B).T  # (n_real, npix)
+            np.savez_compressed(f, B=B, Fwd=Fwd, lidx=lidx, midx=midx, kind=kind)
 
         # --- scatter/gather between real coefficient vector and complex map
         m0 = kind == 0
@@ -128,7 +145,7 @@ class MatrixSHT(nn.Module):
         self.n_real = B.shape[1]
 
         self.register_buffer("B", torch.from_numpy(B.astype(np.float32)))
-        self.register_buffer("B_pinv", torch.from_numpy(B_pinv.astype(np.float32)))
+        self.register_buffer("Fwd", torch.from_numpy(Fwd.astype(np.float32)))
         self.register_buffer("lin_m0", torch.from_numpy(lm_lin[m0]))
         self.register_buffer("real_m0", torch.from_numpy(np.where(m0)[0]))
         self.register_buffer("lin_cs", torch.from_numpy(lm_lin[cs]))
@@ -140,13 +157,12 @@ class MatrixSHT(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x (B, npix, C) real -> c (B, L, M, C) complex."""
         B, N, C = x.shape
-        u = torch.matmul(self.B_pinv, x)  # (B, n_real, C)
+        u = torch.matmul(self.Fwd, x)  # (B, n_real, C)
         creal = x.new_zeros((B, self.L * self.M, C))
         cimag = x.new_zeros((B, self.L * self.M, C))
         creal.index_copy_(1, self.lin_m0, u.index_select(1, self.real_m0))
         cimag.index_copy_(1, self.lin_sn, -u.index_select(1, self.real_sn) / self.sqrt2)
-        creal.index_add_(1, self.lin_cs, u.index_select(1, self.real_cs) / self.sqrt2)
-        # overwrite (index_add on zeros == copy for disjoint slots)
+        creal.index_copy_(1, self.lin_cs, u.index_select(1, self.real_cs) / self.sqrt2)
         c = torch.complex(creal, cimag).view(B, self.L, self.M, C)
         return c
 

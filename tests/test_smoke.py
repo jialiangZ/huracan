@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end smoke test of the entire Huracan pipeline (Lightning layer).
 
-Runs on CPU with configs/smoke.yaml: synthetic data generation, SHT
-round-trip, all six training phases, EDA cycling, and CRPS/ESSR metrics.
+Runs on CPU with configs/smoke.yaml on the regular Gauss grid: synthetic
+data generation, exact SHT round-trip, all six training phases, EDA cycling
+with calendar-driven spin-up, and weighted CRPS/ESSR metrics.
 
 Usage:  .venv/bin/python tests/test_smoke.py
 """
@@ -18,10 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 
-from huracan.config import load_config
-from huracan.core import grid as G
+from huracan.config import channel_report, load_config
+from huracan.core.grid import grid_from_cfg
 from huracan.core.metrics import crps_ensemble, essr
 from huracan.core.model import build_models
+from huracan.core.rollout import calls_for
 from huracan.core.sht import MatrixSHT
 from huracan.data.synthetic import generate_synthetic
 from huracan.inference.runner import run_eda
@@ -29,30 +31,25 @@ from huracan.training.phases import fit_phase
 
 
 def test_sht_roundtrip(cfg):
-    nside = cfg.grid.nside
-    lmax = cfg.grid.lmax
-    colat, lon = G.pixel_centers(nside)
-    sht = MatrixSHT(
-        nside, lmax, np.asarray(colat), np.asarray(lon), cache_dir="data/cache"
-    )
+    grid = grid_from_cfg(cfg.grid)
+    assert grid.npix == grid.nlat * grid.nlon
+    sht = MatrixSHT(grid, cache_dir="data/cache")
     # band-limited random field built from the basis itself
-    B = sht.B.numpy()  # (npix, n_real)
-    u = np.random.default_rng(0).standard_normal((B.shape[1], 1))
-    x = B @ u
+    u = np.random.default_rng(0).standard_normal((sht.n_real, 1))
+    x = sht.B.numpy() @ u
     xt = torch.from_numpy(x.astype(np.float32)).unsqueeze(0)  # (1,npix,1)
     c = sht(xt)
     x2 = sht.inverse(c)
     err = (x2 - xt).abs().max().item()
-    assert err < 1e-3, f"SHT round-trip error too large: {err}"
-    print(f"  SHT round-trip max err {err:.2e}  OK")
-    assert torch.is_complex(c) and c.shape[1] == lmax + 1
+    assert err < 1e-4, f"SHT round-trip error too large: {err}"
+    print(f"  SHT round-trip max err {err:.2e} on {grid.nlat}x{grid.nlon}  OK")
 
 
 def test_model_forward(cfg):
     torch.manual_seed(0)
     fcst, assim = build_models(cfg)
     n_state = fcst.n_state
-    npix = G.npix(cfg.grid.nside)
+    npix = grid_from_cfg(cfg.grid).npix
     B = 2
     x = torch.randn(B, npix, n_state)
     f = torch.randn(B, npix, 3)
@@ -78,6 +75,8 @@ def main():
     cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml")
     cfg.device = "cpu"
     torch.set_num_threads(8)
+
+    print(channel_report(cfg))
 
     print("== SHT round trip ==")
     test_sht_roundtrip(cfg)
@@ -109,10 +108,14 @@ def main():
 
     print("== EDA + metrics ==")
     res = run_eda(cfg, cfg.output_dir, device="cpu")
+    # calendar-driven spin-up: days -> AR calls at 12 h each
+    assert res["spinup_calls"] == calls_for(cfg.eval.spinup_days * 24)
+    assert res["lead_calls"] == calls_for(cfg.eval.lead_days * 24)
     preds = res["preds"].numpy()
     truth = res["truth"].numpy()
-    crps = crps_ensemble(preds, truth)
-    es = essr(preds, truth)
+    w = grid_from_cfg(cfg.grid).pixel_weights
+    crps = crps_ensemble(preds, truth, w)
+    es = essr(preds, truth, w)
     assert np.isfinite(crps).all() and (crps > 0).all()
     print(f"  CRPS shape {crps.shape}, mean {crps.mean():.4f}")
     print(f"  ESSR mean {es.mean():.3f}")

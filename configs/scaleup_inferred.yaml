@@ -1,0 +1,71 @@
+# Paper-scale configuration: every PAPER-explicit value from Table 3 / Sec 3.1
+# is used verbatim; everything the paper does not publish carries [INFERRED]
+# or [REPO] and is chosen to satisfy the known constraints.
+#
+# !! NOT RUNNABLE WITH THE MATRIX SHT BACKEND !!
+# At nlat=180/nlon=360/lmax=179 the dense basis matrix alone is ~17 GB.
+# This config requires injecting a torch-harmonics SHTBackend
+# (HuracanSFNO(sht_factory=...)); core.sht.SHTBackend defines the contract.
+#
+# Grid 180 x 360 is [INFERRED]: the paper fixes 1 deg + L=179 but not the
+# grid family (guide Sec. 7); 180 = lmax+1 Gauss latitudes and 360 >=
+# 2*179+1 longitudes form an exact SHT quadrature grid and match
+# torch-harmonics' native layout.
+run_name: scaleup
+output_dir: runs/scaleup
+device: cuda
+seed: 0
+grid:
+  nlat: 180          # [INFERRED]
+  nlon: 360          # [INFERRED]
+  lmax: 179          # [PAPER] A.2
+model:
+  hidden: 512        # [REPO]
+  blocks: 12         # [REPO]
+  k_filters: 15      # [PAPER] A.2
+  swin_window_lat: 12   # [REPO] 180/12 = 15 windows
+  swin_window_lon: 20   # [REPO] 360/20 = 18 windows
+  heads: 8           # [REPO]
+  mlp_ratio: 4.0     # [REPO]
+  noise_dim: 16      # [REPO]
+  noise_embed_dim: 128    # [REPO]
+  degree_freqs: 16   # [REPO]
+  prediction: residual    # [REPO] guide Sec 8.6
+data:
+  source: era5
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]  # [REPO]
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+    surface_vars: [2t, 2d, 10u, 10v, msl]
+  # ERA5 1979-2014 for the base phases; DA phases need the 2010-2022
+  # observation archive -- periods below assume a prepared 1979-2014 tape.
+  train_period: [0, 52608]
+  val_period: [52608, 52632]
+train:
+  batch_size: 16     # [PAPER] A.3
+  ensemble: 2        # [PAPER] A.3
+  num_workers: 8
+  grad_clip: 1.0     # [REPO]
+  warmup_frac: 0.02  # [REPO]
+  phases:
+    # steps / lr / schedule: [PAPER] Table 3
+    deterministic: {steps: 347000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 149000, lr: 2e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 14000, lr: 3e-6, loss: crps, rollout: 6, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 46000, lr: 2e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic}
+    joint:       {steps: 13000, lr: 3e-6, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar}
+    hybrid:      {steps: 2700, lr: 3e-6, loss: crps, rollout: 6, noise: true,
+                  schedule: constant, init: fcst_ar}
+eval:
+  members: 48        # [PAPER] Sec 3.1
+  spinup_days: 92    # [PAPER] >= 3 months from 2023-10-01 -> 184 AR calls
+  lead_days: 10      # [PAPER] 10 lead days
