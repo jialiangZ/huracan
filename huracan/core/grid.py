@@ -1,6 +1,6 @@
 """Regular spherical grid: Gauss-Legendre latitudes x equispaced longitudes.
 
-Provenance (docs/HURACAN_REPRODUCTION_GUIDE_REVISED.md, Sec. 7): the paper
+Provenance (docs/REPRODUCTION_GUIDE.md, Sec. 7): the paper
 specifies 1-degree resolution and L=179 (Appendix A.2) but never names a
 grid family -- HEALPix appears nowhere in the text, and the exact node
 layout stays [OPEN].  This module implements the high-confidence inference:

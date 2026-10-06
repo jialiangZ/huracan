@@ -5,7 +5,7 @@ Data Assimilation and Weather Prediction"** (Ni et al., arXiv:2508.18486v2)。
 
 官方未发布代码/权重，本项目按论文约束从零实现其全部核心组件，并按本机硬件
 （单张 RTX 4090）缩小规模实跑。**复现基准文档为
-[docs/HURACAN_REPRODUCTION_GUIDE_REVISED.md](docs/HURACAN_REPRODUCTION_GUIDE_REVISED.md)**：
+[docs/REPRODUCTION_GUIDE.md](docs/REPRODUCTION_GUIDE.md)**：
 论文事实 / 高置信推断 / 仓库选择三类来源严格分离（[PAPER]/[INFERRED]/[REPO]），
 本仓库的每个关键超参在 `huracan/config/provenance.py` 登记来源。
 
@@ -158,5 +158,5 @@ scripts/         下载、预处理、训练、推理、phase-chain 演示 (瘦 
 tests/           端到端冒烟 + 单元测试 (时间语义/SHT精确性/Swin周期性/provenance)
 ```
 
-论文 v2 全文提取存于 `data/huracan_v2.txt`（本地参考，不入库）；复现基准
-文档为 `docs/HURACAN_REPRODUCTION_GUIDE_REVISED.md`。
+复现基准文档为 `docs/REPRODUCTION_GUIDE.md`（论文原文可从
+arXiv:2508.18486v2 获取）。
