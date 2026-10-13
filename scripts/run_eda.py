@@ -40,8 +40,11 @@ def main():
     preds = res["preds"].numpy()  # (M, 2F, npix, C) normalized 6-hourly
     truth = res["truth"].numpy()
 
-    grid = grid_from_cfg(cfg.grid)
-    w = grid.pixel_weights  # lat-lon grid is not equal-area -> weight
+    if cfg.model.backbone == "mlp1d":
+        grid, w = None, None  # geometry-free trunk: uniform weights
+    else:
+        grid = grid_from_cfg(cfg.grid)
+        w = grid.pixel_weights  # lat-lon grid is not equal-area -> weight
 
     names = cfg.var_names()[: preds.shape[-1]]
     crps = crps_ensemble(preds, truth, w)  # (2F, C)
@@ -49,8 +52,10 @@ def main():
     rmse = rmse_ensemble_mean(preds, truth, w)
 
     np.savez(out / "metrics.npz", crps=crps, essr=ess, rmse=rmse, names=np.array(names))
-    print(f"\nEDA: {res['members']} members, spin-up {res['spinup_days']} d "
-          f"({res['spinup_calls']} AR calls x 12 h), lead {res['lead_days']} d")
+    print(
+        f"\nEDA: {res['members']} members, spin-up {res['spinup_days']} d "
+        f"({res['spinup_calls']} AR calls x 12 h), lead {res['lead_days']} d"
+    )
     print("CRPS (normalized units), key variables by lead day:")
     key = [n for n in ["z500", "t850", "2t"] if n in names]
     for n in key:
@@ -65,7 +70,9 @@ def main():
 
     # scorecard vs persistence baseline (observed last state persists)
     persist = np.repeat(truth[0][None], truth.shape[0], axis=0)
-    crps_base = crps_ensemble(np.repeat(persist[None], preds.shape[0], axis=0), truth, w)
+    crps_base = crps_ensemble(
+        np.repeat(persist[None], preds.shape[0], axis=0), truth, w
+    )
     scorecard(
         crps,
         crps_base,
@@ -81,22 +88,32 @@ def main():
     import matplotlib.pyplot as plt
 
     spin = res["spinup_end"].numpy()
-    colat, lon = grid.colat, grid.lon_flat
+    j = names.index("z500") if "z500" in names else 0
     fig, axes = plt.subplots(1, 2, figsize=(11, 3))
-    for ax, stat, lab in [
-        (axes[0], spin.mean(0), "ensemble mean"),
-        (axes[1], spin.std(0), "ensemble std"),
-    ]:
-        j = names.index("z500") if "z500" in names else 0
-        sc = ax.scatter(
-            np.rad2deg(lon),
-            90 - np.rad2deg(colat),
-            c=stat[:, j],
-            s=2,
-            cmap="viridis",
-        )
-        ax.set_title(f"{lab} z500 (normalized)")
-        fig.colorbar(sc, ax=ax)
+    if grid is None:
+        # cyclic-chain datasets: ensemble stats along the ring
+        k = np.arange(spin.shape[1])
+        axes[0].plot(k, spin.mean(0)[:, j], "-o", ms=3)
+        axes[0].set_title("spin-up ensemble mean (normalized)")
+        axes[1].plot(k, spin.std(0)[:, j], "-o", ms=3)
+        axes[1].set_title("spin-up ensemble std")
+        for ax in axes:
+            ax.set_xlabel("site k")
+    else:
+        colat, lon = grid.colat, grid.lon_flat
+        for ax, stat, lab in [
+            (axes[0], spin.mean(0), "ensemble mean"),
+            (axes[1], spin.std(0), "ensemble std"),
+        ]:
+            sc = ax.scatter(
+                np.rad2deg(lon),
+                90 - np.rad2deg(colat),
+                c=stat[:, j],
+                s=2,
+                cmap="viridis",
+            )
+            ax.set_title(f"{lab} z500 (normalized)")
+            fig.colorbar(sc, ax=ax)
     fig.tight_layout()
     fig.savefig(out / "spinup_ensemble.png", dpi=180)
     print(f"\nSaved metrics.npz, scorecard and ensemble plots to {out}")

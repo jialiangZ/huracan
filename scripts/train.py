@@ -39,8 +39,10 @@ def main():
         cfg.output_dir = args.workdir
 
     print(channel_report(cfg))
-    print("\n(provenance: PAPER vs REPO/INFERRED choices are registered in "
-          "huracan/config/provenance.py)\n")
+    print(
+        "\n(provenance: PAPER vs REPO/INFERRED choices are registered in "
+        "huracan/config/provenance.py)\n"
+    )
 
     phases = ALL_PHASES if args.phase == "all" else args.phase.split(",")
 
@@ -50,6 +52,12 @@ def main():
         root = Path(cfg.data.root) / "synthetic"
         if not (root / "state.npy").exists():
             generate_synthetic(cfg, root, seed=cfg.seed)
+    elif cfg.data.source.startswith("turbulence"):
+        from huracan.data.turbulence import generate_turbulence
+
+        root = Path(cfg.data.root) / cfg.data.source
+        if not (root / "state.npy").exists():
+            generate_turbulence(cfg, root, seed=cfg.seed)
 
     for ph in phases:
         print(f"\n===== phase: {ph} =====", flush=True)

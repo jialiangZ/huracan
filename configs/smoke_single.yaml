@@ -1,0 +1,58 @@
+# Single-output variant of the smoke test: GenCast-style one-field-per-call
+# convention (model.outputs_per_call: 1).  One AR call advances 6 h instead
+# of the paper's 12 h, so the same calendar windows need twice the calls;
+# rollout counts below are doubled w.r.t. smoke.yaml to cover the same
+# horizons.  Compare CRPS against runs/smoke to evaluate the convention.
+run_name: smoke_single
+output_dir: runs/smoke_single
+device: cpu
+grid:
+  nlat: 16
+  nlon: 32
+  lmax: 15
+model:
+  hidden: 48
+  blocks: 2
+  k_filters: 4
+  swin_window_lat: 4
+  swin_window_lon: 8
+  heads: 2
+  mlp_ratio: 2.0
+  noise_dim: 4
+  noise_embed_dim: 24
+  prediction: residual
+  outputs_per_call: 1     # 1 field/call: 1 call = 6 h (paper default is 2)
+data:
+  source: synthetic
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [300, 500, 850]
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+  train_period: [0, 300]
+  val_period: [300, 380]
+  synthetic:
+    channels: 22
+    steps: 380
+train:
+  batch_size: 4
+  ensemble: 2
+  num_workers: 0
+  phases:
+    deterministic: {steps: 60, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 40, lr: 3e-4, loss: crps, rollout: 0, noise: true, init: deterministic}
+    fcst_ar:     {steps: 15, lr: 1e-5, loss: crps, rollout: 4, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 15, lr: 3e-4, loss: crps, rollout: 4, noise: true,
+                  obs: true, init: stochastic}
+    joint:       {steps: 12, lr: 1e-5, loss: crps, rollout_assim: 4,
+                  rollout_fcst: 4, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar}
+    hybrid:      {steps: 8, lr: 1e-5, loss: crps, rollout: 4, noise: true,
+                  schedule: constant, init: fcst_ar}
+eval:
+  members: 4
+  spinup_days: 2     # 8 AR calls x 6 h at outputs_per_call=1
+  lead_days: 2       # 8 calls, 8 fields

@@ -1,0 +1,75 @@
+# L96-1L: end-to-end ensemble DA on the canonical Lorenz-96 benchmark
+# (K=40, F=8; DATA_PLAN Sec. 3).  mlp1d backbone (cyclic conv + MLP, no
+# geometry); one frame = one dt = one observation cycle, so experiment
+# lengths are expressed in AR calls via eval.*_calls_override
+# (1 call = 2 frames = 0.1 time units; error doubling time ~ 0.8 t.u.).
+#
+#   .venv/bin/python scripts/generate_lorenz96.py --config configs/l96.yaml
+#   CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train.py \
+#       --config configs/l96.yaml --phase all
+#   .venv/bin/python scripts/run_eda.py --config configs/l96.yaml
+run_name: l96
+output_dir: runs/l96
+device: cuda
+seed: 0
+grid:                    # geometry-free: mlp1d only uses nlat*nlon = 40
+  nlat: 1
+  nlon: 40
+  lmax: 39
+model:
+  backbone: mlp1d
+  hidden: 96
+  blocks: 4
+  conv_kernel: 9
+  mlp_ratio: 4.0
+  noise_dim: 4
+  noise_embed_dim: 32
+  prediction: residual
+data:
+  source: lorenz96
+  root: data
+  variables:
+    upper: [x]
+    levels: [500]              # placeholder level name (single channel)
+    surface: []
+  forcing: [f]                 # constant F/F_ref = 1 channel
+  obs:
+    enabled: true
+    surface_vars: []
+  # [train | val | test] independent trajectories; val/test start at
+  # boundary+1 (window() ingests frame t0-1 as the second input) and end
+  # 32 frames short of the next boundary -- never splice trajectories.
+  train_period: [1, 101968]
+  val_period: [102001, 115968]
+  test_period: [116001, 135968]
+  lorenz96:
+    n_vars: 40
+    forcing_f: 8.0
+    dt: 0.05
+    warmup_steps: 2000
+    train_steps: 102000
+    val_steps: 14000
+    test_steps: 20000
+    obs_every: 2               # 20/40 variables report
+    obs_sigma: 1.0             # ~ 0.28 x climatological std
+train:
+  batch_size: 32
+  ensemble: 2
+  num_workers: 2
+  # note: ic_noise smooth_noise on a 1x40 ring is white (L96 background
+  # errors are short-correlated; no large-scale structure to preserve)
+  phases:
+    deterministic: {steps: 8000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 4000, lr: 3e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 2000, lr: 1e-5, loss: crps, rollout: 8, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 12000, lr: 3e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic, ic_noise: 0.6}
+    joint:       {steps: 3000, lr: 1e-5, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, ic_noise: 0.6}
+eval:
+  members: 8
+  spinup_calls_override: 25    # 25 calls = 50 frames = 2.5 t.u. of cycling
+  lead_calls_override: 50      # 50 calls = 100 frames = 5 t.u. forecast

@@ -23,7 +23,6 @@ from huracan.config import channel_report, load_config
 from huracan.core.grid import grid_from_cfg
 from huracan.core.metrics import crps_ensemble, essr
 from huracan.core.model import build_models
-from huracan.core.rollout import calls_for
 from huracan.core.sht import MatrixSHT
 from huracan.data.synthetic import generate_synthetic
 from huracan.inference.runner import run_eda
@@ -108,9 +107,9 @@ def main():
 
     print("== EDA + metrics ==")
     res = run_eda(cfg, cfg.output_dir, device="cpu")
-    # calendar-driven spin-up: days -> AR calls at 12 h each
-    assert res["spinup_calls"] == calls_for(cfg.eval.spinup_days * 24)
-    assert res["lead_calls"] == calls_for(cfg.eval.lead_days * 24)
+    # calendar-driven spin-up: days -> AR calls via cfg.call_semantics()
+    assert res["spinup_calls"] == cfg.spinup_calls()
+    assert res["lead_calls"] == cfg.lead_calls()
     preds = res["preds"].numpy()
     truth = res["truth"].numpy()
     w = grid_from_cfg(cfg.grid).pixel_weights

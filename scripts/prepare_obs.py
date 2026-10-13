@@ -25,7 +25,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    root = Path(cfg["data"]["root"]) / cfg["data"]["source"]
+    root = Path(cfg.data.root) / cfg.data.source
     norm = Normalizer.load(root / "norm_state.json")
     build_obs_tensor(cfg, args.obs_dir, root / "times.json", norm, root / "obs.npy")
 

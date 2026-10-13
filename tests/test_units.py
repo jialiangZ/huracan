@@ -22,16 +22,10 @@ from huracan.config.schema import ConfigError
 from huracan.core import io
 from huracan.core.grid import gauss_grid, grid_from_cfg
 from huracan.core.model import build_models
-from huracan.core.rollout import (
-    AR_ADVANCE_HOURS,
-    OUTPUT_INTERVAL_HOURS,
-    OUTPUTS_PER_CALL,
-    calls_for,
-    outputs_for,
-    unroll,
-)
+from huracan.core.rollout import spinup_and_forecast, unroll
 from huracan.core.sht import MatrixSHT, build_real_basis
 from huracan.core.swin import SwinLatLonBlock
+from huracan.time import CallSemantics
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,19 +102,39 @@ def test_channel_report_and_provenance():
 
 
 def test_time_semantics():
-    assert (OUTPUT_INTERVAL_HOURS, OUTPUTS_PER_CALL, AR_ADVANCE_HOURS) == (6, 2, 12)
-    assert calls_for(72) == 6     # 6-step rollout = 3 days  [PAPER Sec 2.3]
-    assert calls_for(96) == 8     # 8-step rollout = 4 days  [PAPER Sec 2.3]
-    assert calls_for(240) == 20   # 10-day forecast
-    assert outputs_for(240) == 40 # 40 six-hourly fields
+    sem = CallSemantics()  # paper default
+    assert (sem.frame_hours, sem.outputs_per_call, sem.advance_hours) == (6.0, 2, 12.0)
+    assert sem.calls_for_hours(72) == 6  # 6-step rollout = 3 days  [PAPER Sec 2.3]
+    assert sem.calls_for_hours(96) == 8  # 8-step rollout = 4 days  [PAPER Sec 2.3]
+    assert sem.calls_for_hours(240) == 20  # 10-day forecast
+    assert sem.outputs_for_hours(240) == 40  # 40 six-hourly fields
     cfg = load_config(ROOT / "configs" / "paper_constraints.yaml")
-    assert cfg.eval.spinup_calls() == 184  # 92 days x 2 calls/day
+    assert cfg.spinup_calls() == 184  # 92 days x 2 calls/day
     try:
-        calls_for(6)  # not a multiple of the 12 h advance
+        sem.calls_for_hours(6)  # not a multiple of the 12 h advance
         raise AssertionError("expected ValueError for 6h")
     except ValueError:
         pass
     print("  time semantics: 1 AR call = 12 h, two 6 h outputs  OK")
+
+
+def test_time_semantics_single_output():
+    sem = CallSemantics(outputs_per_call=1)  # GenCast-style variant
+    assert sem.advance_hours == 6.0
+    assert sem.calls_for_hours(72) == 12  # same 3 days, twice the calls
+    assert sem.outputs_for_hours(72) == 12
+    assert sem.window_frames(12) == 14 and sem.frames_for_calls(12) == 12
+    assert sem.obs_frames(8) == 9  # opc=1: last call reads frames (7, 8)
+    assert sem.input_frames(5) == (5, 6)  # sliding pair moves by one frame
+    assert CallSemantics().input_frames(5) == (10, 11)  # paper: moves by two
+    assert CallSemantics().obs_frames(8) == 16  # paper: 2*calls
+    # config plumbing: days -> calls follows the configured convention
+    cfg = make_tiny_cfg()
+    cfg.model.outputs_per_call = 1
+    assert cfg.call_semantics().advance_hours == 6.0
+    assert cfg.spinup_calls() == 8  # 2 days at 6 h per call
+    assert cfg.lead_calls() == 8
+    print("  single-output time semantics (1 call = 6 h)  OK")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +183,9 @@ def test_swin_lon_periodicity():
         out = blk(x)
         rolled = torch.roll(x.view(2, nlat, nlon, C), 8, dims=2).view(2, nlat * nlon, C)
         out_r = blk(rolled)
-        expect = torch.roll(out.view(2, nlat, nlon, C), 8, dims=2).view(2, nlat * nlon, C)
+        expect = torch.roll(out.view(2, nlat, nlon, C), 8, dims=2).view(
+            2, nlat * nlon, C
+        )
     assert out.shape == x.shape
     assert torch.isfinite(out).all()
     err = (out_r - expect).abs().max().item()
@@ -188,8 +204,9 @@ def test_swin_lon_periodicity():
 # ---------------------------------------------------------------------------
 
 
-def reference_unroll(models, state, forcing, obs, n_calls, split_assim, ensemble,
-                     use_noise):
+def reference_unroll(
+    models, state, forcing, obs, n_calls, split_assim, ensemble, use_noise
+):
     """The _forward_batch loop of the original hand-rolled trainer,
     transplanted verbatim as a reference."""
     B, nframes, npix, C = state.shape
@@ -238,8 +255,14 @@ def test_rollout_parity():
 
     torch.manual_seed(123)
     p_new, t_new = unroll(
-        models, state, forcing, obs,
-        n_calls=n_calls, split_assim=split, ensemble=2, use_noise=True,
+        models,
+        state,
+        forcing,
+        obs,
+        n_calls=n_calls,
+        split_assim=split,
+        ensemble=2,
+        use_noise=True,
     )
     torch.manual_seed(123)
     p_ref, t_ref = reference_unroll(
@@ -249,6 +272,58 @@ def test_rollout_parity():
     assert torch.equal(t_new, t_ref)
     assert p_new.shape == (B, 2, 2 * n_calls, npix, C)
     print("  rollout parity with original trainer semantics  OK")
+
+
+# ---------------------------------------------------------------------------
+# single-output convention (model.outputs_per_call = 1, GenCast-style)
+# ---------------------------------------------------------------------------
+
+
+def test_single_output_rollout():
+    cfg = make_tiny_cfg()
+    cfg.model.outputs_per_call = 1
+    torch.manual_seed(0)
+    fcst, assim = build_models(cfg)
+    for m in (fcst, assim):
+        for p in m.parameters():
+            torch.nn.init.normal_(p, std=0.02)
+    assert fcst.out.out_features == fcst.n_state
+
+    # step emits a single field
+    grid = grid_from_cfg(cfg.grid)
+    B, npix, C = 2, grid.npix, fcst.n_state
+    x = torch.randn(B, npix, C)
+    f = torch.randn(B, npix, 3)
+    step_out = fcst.step(x, x, f, f)
+    assert isinstance(step_out, tuple) and len(step_out) == 1
+    assert step_out[0].shape == (B, npix, C)
+
+    # unroll over a window of n_calls + 2 frames (sliding pair advances by 1)
+    models = {"assim": assim, "fcst": fcst}
+    n_calls, split = 3, 2
+    frames = cfg.call_semantics().window_frames(n_calls)
+    state = torch.randn(B, frames, npix, C)
+    forcing = torch.randn(B, frames, npix, 3)
+    obs = torch.randn(B, frames, npix, cfg.n_obs_channels())
+    preds, targets = unroll(
+        models, state, forcing, obs,
+        n_calls=n_calls, split_assim=split, ensemble=2, use_noise=True,
+    )
+    assert preds.shape == (B, 2, n_calls, npix, C)
+    assert torch.equal(targets, state[:, 2:])
+
+    # EDA trajectory: window sizing + truth alignment via CallSemantics
+    sem = cfg.call_semantics()
+    S, F = 2, 2
+    tstate = torch.randn(sem.window_frames(S + F), npix, C)
+    tforc = torch.randn(sem.window_frames(S + F), npix, 3)
+    tobs = torch.randn(sem.obs_frames(S), npix, cfg.n_obs_channels())
+    spin_end, tpreds = spinup_and_forecast(
+        assim, fcst, tstate, tforc, tobs, members=2, spinup=S, lead=F
+    )
+    assert spin_end.shape == (2, npix, C)
+    assert tpreds.shape == (2, sem.frames_for_calls(F), npix, C)
+    print("  single-output rollout: 1 field/call, window n+2, EDA shapes  OK")
 
 
 # ---------------------------------------------------------------------------
@@ -272,10 +347,13 @@ def test_prediction_flag():
 
     s1r, s2r = fcst_res.step(x, x, f, f)
     s1d, _ = fcst_dir.step(x, x, f, f)
-    # untrained residual model == persistence; direct model != persistence
-    assert torch.allclose(s1r, x, atol=1e-6)
+    # untrained residual model ~ persistence (near-persistence init: tiny
+    # but non-zero output weights keep encoder gradients alive; a strictly
+    # zero W_out would freeze the whole network until W_out itself grows);
+    # observed |delta| ~ 1% of |x|; direct model != persistence
+    assert (s1r - x).abs().max() < 0.1
     assert not torch.allclose(s1d, x, atol=1e-3)
-    print("  prediction flag: residual=persistence-init, direct=raw  OK")
+    print("  prediction flag: residual=near-persistence-init, direct=raw  OK")
 
 
 # ---------------------------------------------------------------------------
@@ -303,9 +381,11 @@ if __name__ == "__main__":
     test_config_unknown_key_rejected()
     test_channel_report_and_provenance()
     test_time_semantics()
+    test_time_semantics_single_output()
     test_grid_and_sht_exactness()
     test_swin_lon_periodicity()
     test_rollout_parity()
+    test_single_output_rollout()
     test_prediction_flag()
     test_io_roundtrip()
     print("\nALL UNIT TESTS PASSED")

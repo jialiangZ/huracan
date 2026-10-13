@@ -74,7 +74,9 @@ class PhaseRunCallback(L.Callback):
             io.save_phase(self.workdir, self.phase, step, pl_module.state_dicts())
 
     def on_train_end(self, trainer, pl_module):
-        io.save_phase(self.workdir, self.phase, pl_module._step, pl_module.state_dicts())
+        io.save_phase(
+            self.workdir, self.phase, pl_module._step, pl_module.state_dicts()
+        )
         self.losses = pl_module._losses
         with open(self.workdir / f"losses_{self.phase}.json", "w") as f:
             json.dump(self.losses, f)

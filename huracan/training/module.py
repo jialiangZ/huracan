@@ -94,6 +94,8 @@ class HuracanLitModule(L.LightningModule):
             split_assim=self.pc.split_assim(),
             ensemble=self.cfg.train.ensemble,
             use_noise=self.pc.noise,
+            ic_noise=self.pc.ic_noise,
+            grid_hw=(self.cfg.grid.nlat, self.cfg.grid.nlon),
         )
         if self.pc.loss == "crps":
             loss = L2.crps_loss(preds, targets)
@@ -102,7 +104,9 @@ class HuracanLitModule(L.LightningModule):
 
         self.manual_backward(loss)
         params = [
-            p for n in self._active for p in self.models_dict()[n].parameters()
+            p
+            for n in self._active
+            for p in self.models_dict()[n].parameters()
             if p.requires_grad
         ]
         torch.nn.utils.clip_grad_norm_(params, self.cfg.train.grad_clip)

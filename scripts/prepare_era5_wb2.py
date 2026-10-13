@@ -66,7 +66,14 @@ def _fetch_one(job):
     """job: (name, wb2_var, year, level_or_None, out_path)."""
     name, var, year, level, out_path = job
     if Path(out_path).exists():
-        return f"{name} {year}: cached"
+        try:
+            # cached is only valid if it matches the CURRENT grid; a stale
+            # geometry (grid config changed since) is refetched in place
+            if np.load(out_path, mmap_mode="r").shape[1] == _W["npix"]:
+                return f"{name} {year}: cached"
+            print(f"{name} {year}: stale cache (grid changed), refetching", flush=True)
+        except Exception:
+            pass  # unreadable cache -> fall through to refetch
     for attempt in range(3):
         try:
             ds, interp = _W["ds"], _W["interp"]
@@ -161,14 +168,22 @@ def main():
     for name, i in name_idx.items():
         for yi, y in enumerate(args.years):
             chunk = np.load(tmp / f"{name}_{y}.npy")
+            if chunk.shape[1] != npix:
+                raise ValueError(
+                    f"chunk {name}_{y}.npy has npix={chunk.shape[1]}, "
+                    f"expected {npix} (grid config changed? the cache is "
+                    f"self-healing on fetch -- just rerun the script)"
+                )
             sl = slice(yi * chunk.shape[0], (yi + 1) * chunk.shape[0])
             state[sl, :, i] = chunk
         print(f"  assembled {name}", flush=True)
 
     dts = [t.to_pydatetime() for t in times]
+    from huracan.core.grid import insolation
+
     insol = np.stack(
         [
-            G.insolation(colat, lon, d.hour + d.minute / 60, d.timetuple().tm_yday)
+            insolation(colat, lon, d.hour + d.minute / 60, d.timetuple().tm_yday)
             for d in dts
         ]
     )

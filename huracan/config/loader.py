@@ -63,9 +63,7 @@ def apply_overrides(d: dict, overrides: list[str]) -> dict:
     return d
 
 
-def load_config(
-    path: str | Path, overrides: list[str] | None = None
-) -> HuracanConfig:
+def load_config(path: str | Path, overrides: list[str] | None = None) -> HuracanConfig:
     """Load a YAML config file into a validated ``HuracanConfig``."""
     with open(path) as f:
         user = yaml.safe_load(f) or {}

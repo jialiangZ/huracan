@@ -1,0 +1,93 @@
+# OSSE at pilot scale, SHORT-SPINUP variant of configs/osse.yaml.
+#
+# Only difference vs configs/osse.yaml: eval.spinup_days 30 -> 15
+# (60 -> 30 AR calls). Everything else (grid, physics, training phases,
+# lead days, seeds) is kept identical so results are directly comparable.
+#
+# Rationale (measured, runs/osse/osse_results.json analysis curves; note
+# the curve is per 6-hourly frame -- run_osse.py's daily() mislabels
+# 12-hour groups as days, see review): with-obs analysis error reaches
+# its plateau (0.29 -> ~0.275) by ~frame 10 (~2.5 d); zero-obs plateaus
+# ~day 3; fcst-spinup exceeds 0.8 by ~day 3 and ~1.0 by ~day 8. 15 d =
+# ~1x the ~14 d large-scale atmospheric memory + 6x the observed ~2.5 d
+# convergence time, so all three controls
+# are in steady state while EDA inference cost drops 8x(60+20)=640
+# -> 8x(30+20)=400 forward calls vs osse.yaml (and 1632 for the paper's
+# 92 d; also applies per sweep point).
+#
+# NOT for paper-protocol runs: the paper's >=3-month spin-up
+# (92 d, Oct 1 2023 -> Jan 1 2024) is a structural calendar bridge, kept
+# in paper_constraints.yaml / scaleup_inferred.yaml -- do not "tune" it.
+#
+#   CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/run_osse.py \
+#       --config configs/osse_spinup15.yaml --device cuda:0
+#   # equivalent one-off (also add --workdir runs/osse_s15, else it
+#   # writes into runs/osse and clobbers the 30-day results):
+#   # ... --config configs/osse.yaml --override eval.spinup_days=15 \
+#   #       --workdir runs/osse_s15
+run_name: osse_spinup15
+output_dir: runs/osse_spinup15
+device: cuda
+seed: 0
+grid:
+  nlat: 48
+  nlon: 96
+  lmax: 47
+model:
+  hidden: 192
+  blocks: 6
+  k_filters: 8
+  swin_window_lat: 6
+  swin_window_lon: 12
+  heads: 3
+  mlp_ratio: 4.0
+  noise_dim: 8
+  noise_embed_dim: 64
+  prediction: residual
+data:
+  source: turbulence
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+  train_period: [0, 1800]        # 450 days
+  val_period: [1800, 2400]       # held-out nature-run segment (150 days)
+  synthetic:
+    channels: 72
+    steps: 2400
+    obs_fraction: 0.08           # ~369 fixed stations, area-uniform
+    obs_noise: 0.20
+    turbulence:
+      n_layers: 3
+      wind_rms: 25.0
+      forcing_lmin: 2
+      forcing_lmax: 8
+      forcing_tau_days: 2.0      # stochastic stirring (Markovian)
+      drag_days: 10.0
+      hyper_days: 2.0
+      dt_seconds: 1200.0         # 18 RK4 substeps per 6 h frame
+      warmup_frames: 300         # 75 days to statistical equilibrium
+      temp_tau_days: 15.0
+      tracer_tau_days: 12.0
+train:
+  batch_size: 8
+  ensemble: 2
+  num_workers: 4
+  phases:
+    deterministic: {steps: 12000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 6000, lr: 2e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 1200, lr: 3e-6, loss: crps, rollout: 6, noise: true,
+                  init: stochastic}
+    assim:       {steps: 8000, lr: 2e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic, ic_noise: 0.6}
+    joint:       {steps: 2000, lr: 3e-6, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, ic_noise: 0.6}
+eval:
+  members: 8
+  spinup_days: 15    # 30 AR calls; see header (plateau by ~day 5 in runs/osse)
+  lead_days: 10

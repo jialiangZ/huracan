@@ -90,7 +90,31 @@ def gauss_grid(nlat: int, nlon: int, lmax: int | None = None) -> SphericalGrid:
     return SphericalGrid(int(nlat), int(nlon), int(lmax), lat, lon, w_lat).validate()
 
 
+def planar_grid(nlat: int, nlon: int, lmax: int | None = None) -> SphericalGrid:
+    """Uniform N x N periodic square (Kolmogorov / FNO line).
+
+    Rows are y, cols are x (row-major npix, same reshape convention as the
+    sphere, so the Swin windows apply unchanged).  Weights are uniform:
+    pixel_weights are all 1.  ``lmax`` counts spectral-filter degrees along
+    the (unshifted) ky axis and must be nlat - 1; the Gauss-SHT quadrature
+    constraints do not apply, so validation is skipped."""
+    if lmax is None:
+        lmax = nlat - 1
+    if lmax != nlat - 1:
+        raise ValueError(
+            f"planar grid needs lmax == nlat-1 (got lmax={lmax}, "
+            f"nlat={nlat}): the compressed spectral filter indexes all ky "
+            f"rows of the rfft2 output"
+        )
+    lat = np.linspace(np.pi / 2, -np.pi / 2, nlat, endpoint=False)  # unused
+    lon = 2 * np.pi * np.arange(nlon) / nlon
+    w_lat = np.full(nlat, 2.0 / nlat)  # uniform -> pixel_weights == 1
+    return SphericalGrid(int(nlat), int(nlon), int(lmax), lat, lon, w_lat)
+
+
 def grid_from_cfg(gcfg: GridCfg) -> SphericalGrid:
+    if gcfg.type == "planar":
+        return planar_grid(gcfg.nlat, gcfg.nlon, gcfg.lmax)
     return gauss_grid(gcfg.nlat, gcfg.nlon, gcfg.lmax)
 
 

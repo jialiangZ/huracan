@@ -17,31 +17,80 @@ REPO = "REPO"
 
 PROVENANCE: dict[str, tuple[str, str]] = {
     # -- grid / spectral ----------------------------------------------------
-    "grid.nlat": (INFERRED, "1 deg + L=179 constrain a 180x360-class regular grid; exact family/nodes OPEN (guide Sec. 7)"),
+    "grid.nlat": (
+        INFERRED,
+        "1 deg + L=179 constrain a 180x360-class regular grid; exact family/nodes OPEN (guide Sec. 7)",
+    ),
     "grid.nlon": (INFERRED, "same as grid.nlat; nlon >= 2*lmax+1 for exact SHT"),
-    "grid.lmax": (PAPER, "Appendix A.2: '1-degree resolution implies L = 179' (pilot uses less)"),
+    "grid.lmax": (
+        PAPER,
+        "Appendix A.2: '1-degree resolution implies L = 179' (pilot uses less)",
+    ),
     # -- model ---------------------------------------------------------------
     "model.hidden": (REPO, "not published"),
     "model.blocks": (REPO, "not published"),
     "model.k_filters": (PAPER, "A.2: k = 15 at paper scale (pilot uses 8)"),
-    "model.swin_window_lat": (REPO, "Swin hyperparameters not published (guide M07-M10)"),
+    "model.swin_window_lat": (
+        REPO,
+        "Swin hyperparameters not published (guide M07-M10)",
+    ),
     "model.swin_window_lon": (REPO, "Swin hyperparameters not published"),
     "model.heads": (REPO, "not published"),
     "model.mlp_ratio": (REPO, "not published"),
     "model.noise_dim": (REPO, "noise dimension not published (guide S01-S04)"),
     "model.noise_embed_dim": (REPO, "not published"),
     "model.degree_freqs": (REPO, "sinusoidal degree encoding stated, its size not"),
-    "model.prediction": (REPO, "residual vs direct target not specified (guide M13/M14)"),
+    "model.prediction": (
+        REPO,
+        "residual vs direct target not specified (guide M13/M14)",
+    ),
+    "model.outputs_per_call": (
+        PAPER,
+        "Sec 2.2/2.3: one call emits two 6 h fields (1 = GenCast-style variant)",
+    ),
     "model.grad_checkpoint": (REPO, "engineering choice"),
     # -- data ------------------------------------------------------------------
     "data.variables.upper": (PAPER, "Table 2: z,t,u,v,q"),
-    "data.variables.levels": (REPO, "13 levels confirmed but the list is not published (guide V01)"),
+    "data.variables.levels": (
+        REPO,
+        "13 levels confirmed but the list is not published (guide V01)",
+    ),
     "data.variables.surface": (PAPER, "Table 2: 2t,2d,10u,10v,tcc,tcwv,msl"),
     "data.forcing": (PAPER, "Table 2 input-only: insolation + constants z,lsm"),
-    "data.obs.enabled": (REPO, "pilot uses IGRA/ISD only; satellite channels are Level-2 work"),
-    "data.obs.surface_vars": (REPO, "Table 2 in-situ surface = 6 vars incl. tcc; repo omits tcc"),
+    "data.obs.enabled": (
+        REPO,
+        "pilot uses IGRA/ISD only; satellite channels are Level-2 work",
+    ),
+    "data.obs.surface_vars": (
+        REPO,
+        "Table 2 in-situ surface = 6 vars incl. tcc; repo omits tcc",
+    ),
     "data.train_period": (REPO, "pilot subset of paper's 1979-2014 / 2010-2022"),
     "data.val_period": (REPO, "paper reserves 2023 for validation"),
+    "data.synthetic.turbulence.n_layers": (
+        REPO,
+        "OSSE extension: idealized 2D-NS turbulence, not part of the paper",
+    ),
+    "data.synthetic.turbulence.wind_rms": (
+        REPO,
+        "OSSE extension: target jet speed of the nature run",
+    ),
+    "data.synthetic.turbulence.dt_seconds": (
+        REPO,
+        "OSSE extension: RK4 substep, CFL-safe default",
+    ),
+    "data.synthetic.kolmogorov.nu": (
+        REPO,
+        "OSSE extension: Kolmogorov-flow viscosity (ADDA/LEVDA benchmark)",
+    ),
+    "data.synthetic.kolmogorov.kf": (
+        REPO,
+        "OSSE extension: sinusoidal forcing wavenumber",
+    ),
+    "grid.type": (
+        REPO,
+        "OSSE extension: planar N x N periodic square for the FNO/Kolmogorov line",
+    ),
     # -- training --------------------------------------------------------------
     "train.batch_size": (PAPER, "A.3: batch size 16"),
     "train.ensemble": (PAPER, "A.3: stochastic training ensemble size 2"),
@@ -56,10 +105,17 @@ PROVENANCE: dict[str, tuple[str, str]] = {
     "train.phases.*.rollout_assim": (PAPER, "Sec 2.3: joint = 8 assim + 8 fcst calls"),
     "train.phases.*.rollout_fcst": (PAPER, "Sec 2.3: joint = 8 assim + 8 fcst calls"),
     "train.phases.*.noise": (PAPER, "Sec 2.3: noise added from stochastic phase on"),
+    "train.phases.*.ic_noise": (
+        REPO,
+        "OSSE extension: background-error injection so obs fusion carries training signal",
+    ),
     "train.phases.*.init": (PAPER, "Sec 2.3: phase chaining; obs columns random"),
     # -- eval -------------------------------------------------------------------
     "eval.members": (PAPER, "Sec 3.1: 48 independent EDA members"),
-    "eval.spinup_days": (PAPER, "Sec 3.1: at least 3 months of assimilation (>= ~92 d)"),
+    "eval.spinup_days": (
+        PAPER,
+        "Sec 3.1: at least 3 months of assimilation (>= ~92 d)",
+    ),
     "eval.lead_days": (PAPER, "Sec 3.1: 10 lead days"),
 }
 
@@ -67,6 +123,7 @@ PROVENANCE: dict[str, tuple[str, str]] = {
 def resolve(cfg: HuracanConfig, path: str):
     """Walk a dot-path (with ``*`` wildcards over mapping sections) on a
     config; raises AttributeError for unknown fields."""
+
     def walk(node, parts):
         if not parts:
             return node

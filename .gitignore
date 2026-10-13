@@ -4,8 +4,9 @@ __pycache__/
 *.pyc
 *.egg-info/
 
-# large data & run artifacts (regenerable)
-data/
+# large data & run artifacts (regenerable) -- anchored to the repo root so
+# the huracan/data/ source package stays tracked
+/data/
 runs/
 runs_pilot_train.log
 

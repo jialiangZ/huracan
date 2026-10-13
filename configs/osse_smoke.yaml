@@ -1,0 +1,77 @@
+# OSSE smoke scale: idealized turbulence (barotropic vorticity / 2D NS on
+# the rotating sphere), end-to-end assimilation-capability experiment.
+# Grid 16x32, spectral dynamics truncated at L=7 (auto: lmax 15 // 2,
+# alias-free quadratic products).
+#
+# Verified recipe (runs/osse_gpu2): analysis error 0.435 -> 0.417 with obs
+# vs 0.63 zero-obs vs 0.95 fcst-spinup; u850 analysis error halves.
+# The key knobs are assim rollout=8 (paper Table 3) + ic_noise background
+# error injection + enough assim steps.  On a GPU the whole experiment
+# takes ~25 min; on CPU scale the phase steps down by ~10x and expect a
+# weaker (but visible) signal.
+run_name: osse_smoke
+output_dir: runs/osse_smoke
+device: cpu
+seed: 0
+grid:
+  nlat: 16
+  nlon: 32
+  lmax: 15
+model:
+  hidden: 48
+  blocks: 2
+  k_filters: 4
+  swin_window_lat: 4
+  swin_window_lon: 8
+  heads: 2
+  mlp_ratio: 2.0
+  noise_dim: 4
+  noise_embed_dim: 24
+  prediction: residual
+data:
+  source: turbulence_smoke   # own data dir: coexists with the pilot-scale
+                             # nature run in data/turbulence
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [300, 500, 850]      # 15 upper-air channels
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+  train_period: [0, 600]
+  val_period: [600, 800]
+  synthetic:
+    channels: 22
+    steps: 800
+    obs_fraction: 0.12           # ~61 fixed stations
+    obs_noise: 0.25              # 25% of channel std
+    turbulence:
+      n_layers: 3
+      wind_rms: 16.0             # m/s target upper layer (gentle for L=7)
+      forcing_lmin: 2
+      forcing_lmax: 5
+      drag_days: 10.0
+      hyper_days: 2.0
+      dt_seconds: 1800.0         # 12 RK4 substeps per 6 h frame
+      warmup_frames: 120
+      temp_tau_days: 15.0
+      tracer_tau_days: 12.0
+train:
+  batch_size: 4
+  ensemble: 2
+  num_workers: 0
+  phases:
+    deterministic: {steps: 1500, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 1000, lr: 3e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 400, lr: 1e-5, loss: crps, rollout: 2, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 8000, lr: 3e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic, ic_noise: 0.6}
+    joint:       {steps: 2000, lr: 1e-5, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, ic_noise: 0.6}
+eval:
+  members: 4
+  spinup_days: 6     # 12 AR calls x 12 h of obs-assimilation cycling
+  lead_days: 6       # 12 forecast calls

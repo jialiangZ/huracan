@@ -1,0 +1,77 @@
+# OSSE on Kolmogorov flow: 2D Navier-Stokes with sinusoidal forcing on the
+# periodic square (the ADDA/LEVDA-community turbulence benchmark), paired
+# with the planar-FNO trunk (PlanarSHT backend injected into the same
+# HuracanSFNO: Swin mixer / compressed spectral filter / noise embedding /
+# phased training / EDA cycling all unchanged).
+#
+#   .venv/bin/python scripts/run_osse.py --config configs/osse_kolmo.yaml \
+#       --device cuda:0
+#
+# Physics: N=64, nu=2e-3, kf=4, forcing amplitude calibrated to u_rms=1
+# (Re ~ 125), 2/3-dealiased pseudo-spectral RK4.  Recorded channels
+# [w, psi, u, v]; one AR call advances 2 frames = 0.5 time units
+# (~ 1/6 eddy-turnover at the forcing scale).
+run_name: osse_kolmo
+output_dir: runs/osse_kolmo
+device: cuda
+seed: 0
+grid:
+  type: planar
+  nlat: 64
+  nlon: 64
+  lmax: 63              # must equal nlat-1 (ky-mode count of the filter)
+model:
+  hidden: 64
+  blocks: 3
+  k_filters: 8
+  swin_window_lat: 8
+  swin_window_lon: 16
+  heads: 2
+  mlp_ratio: 2.5
+  noise_dim: 4
+  noise_embed_dim: 32
+  prediction: residual
+data:
+  source: kolmogorov
+  root: data
+  variables:
+    upper: [w, psi, u, v]
+    levels: [500]             # single dummy level -> 4 channels
+    surface: []
+  forcing: []                 # no physical forcings on this source
+  obs:
+    enabled: true
+    surface_vars: []
+  train_period: [0, 1200]
+  val_period: [1200, 1600]
+  synthetic:
+    channels: 4
+    steps: 1600
+    obs_fraction: 0.15
+    obs_noise: 0.25
+    kolmogorov:
+      nu: 2.0e-3
+      kf: 4
+      u_rms: 1.0
+      dt: 0.01
+      dt_frame: 0.25
+      warmup_frames: 400
+train:
+  batch_size: 8
+  ensemble: 2
+  num_workers: 2
+  phases:
+    deterministic: {steps: 3000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 1500, lr: 3e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 400, lr: 1e-5, loss: crps, rollout: 2, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 6000, lr: 3e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic, ic_noise: 0.6}
+    joint:       {steps: 1500, lr: 1e-5, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, ic_noise: 0.6}
+eval:
+  members: 4
+  spinup_days: 6     # 12 AR calls (= 6 time units) of obs-assimilation
+  lead_days: 6       # 12 forecast calls

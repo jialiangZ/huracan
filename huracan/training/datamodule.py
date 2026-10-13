@@ -16,7 +16,9 @@ from ..data.dataset import make_loader
 
 
 class HuracanDataModule(L.LightningDataModule):
-    def __init__(self, cfg: HuracanConfig, phase: str, data_dir: str | Path | None = None):
+    def __init__(
+        self, cfg: HuracanConfig, phase: str, data_dir: str | Path | None = None
+    ):
         super().__init__()
         self.cfg = cfg
         self.phase = phase

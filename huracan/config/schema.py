@@ -11,6 +11,8 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import get_type_hints
 
+from ..time import CallSemantics
+
 
 class ConfigError(ValueError):
     """Raised for unknown keys, missing keys or bad values in a config."""
@@ -23,36 +25,56 @@ class ConfigError(ValueError):
 
 @dataclass
 class GridCfg:
-    """Gauss-Legendre x equispaced regular grid [INFERRED].
-
-    The paper fixes 1-degree output and L=179 (A.2) but never names the grid
-    family (guide Sec. 7); nlat/nlon at paper scale would be 180/360."""
+    """Grid family.  ``gauss``: Gauss-Legendre x equispaced sphere (exact
+    SHT quadrature).  ``planar``: N x N periodic square for the FNO /
+    Kolmogorov OSSE line -- rows are y, cols are x, uniform area weights,
+    ``lmax`` is only the spectral-filter degree count (must equal
+    nlat - 1; the SHT validation constraints do not apply)."""
 
     nlat: int = 48
     nlon: int = 96
     lmax: int = 47
+    type: str = "gauss"
+
+    def __post_init__(self):
+        if self.type not in ("gauss", "planar"):
+            raise ValueError(
+                f"grid.type must be 'gauss' or 'planar', got {self.type!r}"
+            )
 
 
 @dataclass
 class ModelCfg:
-    hidden: int = 192                 # [REPO] not published
-    blocks: int = 6                   # [REPO] not published
-    k_filters: int = 8                # paper A.2: k=15 at scale
-    swin_window_lat: int = 6          # [REPO] not published; must divide nlat
-    swin_window_lon: int = 12         # [REPO] not published; must divide nlon
-    heads: int = 3                    # [REPO] not published
-    mlp_ratio: float = 4.0            # [REPO] not published
-    noise_dim: int = 8                # [REPO] not published
-    noise_embed_dim: int = 64         # [REPO] not published
-    degree_freqs: int = 16            # [REPO] not published
-    grad_checkpoint: bool = True      # [REPO] engineering choice
-    prediction: str = "residual"      # [REPO] residual|direct (guide Sec 8.6)
+    hidden: int = 192  # [REPO] not published
+    blocks: int = 6  # [REPO] not published
+    backbone: str = "sfno"  # sfno | mlp1d (cyclic-chain datasets)
+    k_filters: int = 8  # paper A.2: k=15 at scale
+    swin_window_lat: int = 6  # [REPO] not published; must divide nlat
+    swin_window_lon: int = 12  # [REPO] not published; must divide nlon
+    conv_kernel: int = 9  # [REPO] mlp1d only: cyclic conv width
+    heads: int = 3  # [REPO] not published
+    mlp_ratio: float = 4.0  # [REPO] not published
+    noise_dim: int = 8  # [REPO] not published
+    noise_embed_dim: int = 64  # [REPO] not published
+    degree_freqs: int = 16  # [REPO] not published
+    grad_checkpoint: bool = True  # [REPO] engineering choice
+    prediction: str = "residual"  # [REPO] residual|direct (guide Sec 8.6)
+    outputs_per_call: int = 2  # [PAPER] fields per call; 1 = GenCast-style
 
     def __post_init__(self):
+        if self.backbone not in ("sfno", "mlp1d"):
+            raise ValueError(
+                f"model.backbone must be 'sfno' or 'mlp1d', got {self.backbone!r}"
+            )
         if self.prediction not in ("residual", "direct"):
             raise ValueError(
                 f"model.prediction must be 'residual' or 'direct', "
                 f"got {self.prediction!r}"
+            )
+        if not isinstance(self.outputs_per_call, int) or self.outputs_per_call < 1:
+            raise ValueError(
+                f"model.outputs_per_call must be a positive int, "
+                f"got {self.outputs_per_call!r}"
             )
 
 
@@ -69,12 +91,133 @@ class VariablesCfg:
     upper: list[str] = field(default_factory=lambda: ["z", "t", "u", "v", "q"])
     levels: list[int] = field(
         default_factory=lambda: [
-            50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000,
+            50,
+            100,
+            150,
+            200,
+            250,
+            300,
+            400,
+            500,
+            600,
+            700,
+            850,
+            925,
+            1000,
         ]
     )
     surface: list[str] = field(
         default_factory=lambda: ["2t", "2d", "10u", "10v", "tcc", "tcwv", "msl"]
     )
+
+
+@dataclass
+class KolmoCfg:
+    """Physics of the Kolmogorov-flow nature run (2D NS with sinusoidal
+    forcing on the periodic square, nondimensional units, domain 2pi):
+        d(omega)/dt = -u.grad(omega) + nu*lap(omega) + A*sin(k_f*y),
+        omega = -lap(psi), u = (psi_y, -psi_x).
+    The forcing amplitude A is calibrated during warm-up to the target
+    rms speed, then frozen (statistically steady turbulence)."""
+
+    nu: float = 2e-3  # viscosity (Re ~ u_rms/(nu*kf))
+    kf: int = 4  # forcing wavenumber
+    u_rms: float = 1.0  # target rms speed (calibrates A)
+    dt: float = 0.01  # RK4 substep
+    dt_frame: float = 0.25  # time between recorded frames
+    warmup_frames: int = 400
+
+
+@dataclass
+class TurbCfg:
+    """Physics of the idealized nature run (OSSE extension, all [REPO]):
+    forced-dissipative barotropic vorticity turbulence on the rotating
+    sphere (2D Navier-Stokes + beta) with advected T/q-like tracers.
+    See huracan/data/turbulence.py."""
+
+    lmax_dyn: int | None = None  # None -> auto: grid lmax // 2 (alias-free)
+    n_layers: int = 3  # independent dynamics layers -> levels
+    wind_rms: float = 25.0  # target upper-layer rms wind [m/s]
+    forcing_lmin: int = 2  # vorticity forcing wavenumber band
+    forcing_lmax: int = 8
+    forcing_tau_days: float = 2.0  # OU correlation time of the stochastic
+    # stirring (0 = deterministic pattern)
+    drag_days: float = 10.0  # linear drag (energy sink)
+    hyper_days: float = 2.0  # e-folding of nu*lap^2 at lmax_dyn
+    coupling_days: float = 0.0  # inter-layer drag (0 = independent)
+    dt_seconds: float = 1200.0  # RK4 substep (CFL-safe default)
+    warmup_frames: int = 300  # nature-run frames discarded (equilibrium)
+    temp_tau_days: float = 15.0  # T-tracer relaxation to T_eq(lat)
+    tracer_tau_days: float = 12.0  # moisture-like tracer sink
+    obs_fixed_stations: bool = True  # fixed station network (vs resampled)
+    obs_report_prob: float = 1.0  # per-frame station reporting probability
+
+
+@dataclass
+class Lorenz96Cfg:
+    """Lorenz-96 nature-run settings (DATA_PLAN Sec. 3, all [REPO]).
+
+    One-level main line (K=40, F=8, dt=0.05) is the community lingua
+    franca; ``two_scale`` adds the Wilks-2005-parameter multiscale
+    ablation whose stored state is X only (Y = unresolved subgrid).
+
+    Frame semantics: one frame = one dt = one observation cycle (there
+    are no hours; express experiment lengths in AR calls via
+    ``eval.spinup_calls_override`` / ``lead_calls_override``).
+
+    Dataset layout: [train | val | test] independent trajectories
+    concatenated into one state.npy; suggested periods (with boundary
+    buffers) are printed and returned by ``generate_lorenz96``.
+    """
+
+    # one-level system
+    n_vars: int = 40
+    forcing_f: float = 8.0
+    dt: float = 0.05
+    warmup_steps: int = 2000
+    train_steps: int = 102000
+    val_steps: int = 14000
+    test_steps: int = 20000
+    # observations (physical units; noise sigma is absolute)
+    obs_every: int = 2  # observe every k-th variable
+    obs_sigma: float = 1.0
+    # two-scale ablation (state = X only)
+    two_scale: bool = False
+    n_slow: int = 36
+    n_fast_per_slow: int = 10
+    coupling_h: float = 1.0
+    coupling_b: float = 10.0
+    coupling_c: float = 10.0
+    fast_substeps: int = 10  # RK4 substeps per stored frame (2L only)
+
+
+@dataclass
+class JhtdbCfg:
+    """JHTDB forced-isotropic-turbulence cutout plan (DATA_PLAN Sec. 5).
+
+    Isotropic1024fine (1024^3, full time evolution ~5 large-scale
+    turnover times, DB dt ~ 0.002).  The database is a static nature
+    run: no forward model, which is exactly the regime the end-to-end
+    data-driven assimilation targets.  Time-resolved datasets only --
+    snapshot-only DBs (4096^3 / 8192^3 / Channel5200) are unusable for
+    DA and deliberately absent here.
+    """
+
+    dataset: str = "isotropic1024fine"
+    variables: list[str] = field(default_factory=lambda: ["u", "v", "w"])
+    train_size: int = 64  # cutout edge (train/val)
+    test_size: int = 128  # cutout edge (size-generalization test)
+    frames: int = 128  # stored frames per cutout
+    stride: int = 5  # DB steps between frames (~0.01 t.u.)
+    n_train: int = 64
+    n_val: int = 8
+    n_test_spatial: int = 8  # held-out spatial origins
+    n_test_temporal: int = 4  # later, training-unseen time window
+    n_test_size: int = 4  # 128^3 held-out cutouts
+    min_origin_distance: int = 128  # Chebyshev distance between origins
+    storage_dtype: str = "float16"  # on-disk; cast to fp32 when training
+    obs_fraction: float = 0.01  # point-sensor voxels per frame
+    obs_noise: float = 0.10  # fraction of channel std
 
 
 @dataclass
@@ -88,6 +231,8 @@ class SyntheticCfg:
     decay_per_step: float = 0.9995
     obs_fraction: float = 0.12
     obs_noise: float = 0.15
+    turbulence: TurbCfg = field(default_factory=TurbCfg)
+    kolmogorov: KolmoCfg = field(default_factory=KolmoCfg)
 
 
 @dataclass
@@ -99,7 +244,14 @@ class DataCfg:
     obs: ObsCfg = field(default_factory=ObsCfg)
     train_period: list[int] = field(default_factory=lambda: [0, 3000])
     val_period: list[int] = field(default_factory=lambda: [3000, 3200])
+    test_period: list[int] = field(default_factory=lambda: [3200, 3400])
     synthetic: SyntheticCfg = field(default_factory=SyntheticCfg)
+    # AI4DA cross-domain nature runs (DATA_PLAN.md); the active one is
+    # selected by ``source``, which doubles as the data directory name.
+    # Kolmogorov flow lives under ``synthetic.kolmogorov`` (KolmoCfg,
+    # data/kolmogorov.py) alongside turbulence.
+    lorenz96: Lorenz96Cfg = field(default_factory=Lorenz96Cfg)
+    jhtdb: JhtdbCfg = field(default_factory=JhtdbCfg)
 
 
 @dataclass
@@ -120,6 +272,7 @@ class PhaseCfg:
     init: str | None = None
     fcst_init: str | None = None
     batch_size: int | None = None
+    ic_noise: float = 0.0
 
     def n_calls(self) -> int:
         """Autoregressive model calls per training sample."""
@@ -140,23 +293,47 @@ def _default_phases() -> dict[str, PhaseCfg]:
             steps=40000, lr=5e-4, loss="l1", rollout=0, noise=False, init=None
         ),
         "stochastic": PhaseCfg(
-            steps=15000, lr=2e-4, loss="crps", rollout=0, noise=True,
+            steps=15000,
+            lr=2e-4,
+            loss="crps",
+            rollout=0,
+            noise=True,
             init="deterministic",
         ),
         "fcst_ar": PhaseCfg(
-            steps=3000, lr=3e-6, loss="crps", rollout=6, noise=True,
+            steps=3000,
+            lr=3e-6,
+            loss="crps",
+            rollout=6,
+            noise=True,
             init="stochastic",
         ),
         "assim": PhaseCfg(
-            steps=5000, lr=2e-4, loss="crps", rollout=8, noise=True, obs=True,
+            steps=5000,
+            lr=2e-4,
+            loss="crps",
+            rollout=8,
+            noise=True,
+            obs=True,
             init="stochastic",
         ),
         "joint": PhaseCfg(
-            steps=2000, lr=3e-6, loss="crps", rollout_assim=8, rollout_fcst=8,
-            noise=True, obs=True, init="assim", fcst_init="fcst_ar",
+            steps=2000,
+            lr=3e-6,
+            loss="crps",
+            rollout_assim=8,
+            rollout_fcst=8,
+            noise=True,
+            obs=True,
+            init="assim",
+            fcst_init="fcst_ar",
         ),
         "hybrid": PhaseCfg(
-            steps=1000, lr=3e-6, loss="crps", rollout=6, noise=True,
+            steps=1000,
+            lr=3e-6,
+            loss="crps",
+            rollout=6,
+            noise=True,
             init="fcst_ar",
         ),
     }
@@ -178,20 +355,20 @@ class EvalCfg:
 
     The spin-up length is deliberately expressed in *days* (calendar-driven,
     guide Sec. 12.3): 3 months from 2023-10-01 is ~92 days, i.e. 184
-    autoregressive calls at 12 h per call -- never a hard-coded loop count."""
+    autoregressive calls at the paper's 12 h per call -- never a hard-coded
+    loop count.  Days are converted to calls on the root config
+    (:meth:`HuracanConfig.spinup_calls`) via :class:`huracan.time.CallSemantics`."""
 
-    members: int = 8                  # paper: 48
-    spinup_days: float = 60.0         # paper: at least 3 months (~92 d)
-    lead_days: float = 10.0           # paper: 10 lead days
+    members: int = 8  # paper: 48
+    spinup_days: float = 60.0  # paper: at least 3 months (~92 d)
+    lead_days: float = 10.0  # paper: 10 lead days
     start_index: int | None = None
-
-    # one AR call advances 12 h (core.rollout.AR_ADVANCE_HOURS); schema must
-    # stay importable from core, so the constant is restated here
-    def spinup_calls(self) -> int:
-        return int(round(self.spinup_days * 24 / 12))
-
-    def lead_calls(self) -> int:
-        return int(round(self.lead_days * 24 / 12))
+    # Non-atmosphere datasets (lorenz96 / kolmogorov / jhtdb) have no
+    # calendar: express experiment lengths directly in AR calls instead
+    # (paper convention: 1 call = 2 frames; L96: 1 call = 0.1 t.u.).
+    # When set, these override the day-derived values.
+    spinup_calls_override: int | None = None
+    lead_calls_override: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +408,23 @@ class HuracanConfig:
         v = self.data.variables
         return len(v.upper) * len(v.levels) + len(self.data.obs.surface_vars)
 
+    # -- temporal semantics ------------------------------------------------
+    def call_semantics(self) -> CallSemantics:
+        """Single source of truth for call/frame/hour arithmetic."""
+        return CallSemantics(outputs_per_call=self.model.outputs_per_call)
+
+    def spinup_calls(self) -> int:
+        """EDA spin-up length in AR calls (override wins; else days-driven)."""
+        if self.eval.spinup_calls_override is not None:
+            return self.eval.spinup_calls_override
+        return self.call_semantics().calls_for_hours(self.eval.spinup_days * 24)
+
+    def lead_calls(self) -> int:
+        """Forecast length in AR calls (override wins; else days-driven)."""
+        if self.eval.lead_calls_override is not None:
+            return self.eval.lead_calls_override
+        return self.call_semantics().calls_for_hours(self.eval.lead_days * 24)
+
     # -- construction ----------------------------------------------------
     @classmethod
     def from_dict(cls, d: dict) -> "HuracanConfig":
@@ -247,8 +441,7 @@ def _check_keys(d: dict, cls: type, path: str) -> None:
     unknown = set(d) - valid
     if unknown:
         raise ConfigError(
-            f"unknown key(s) {sorted(unknown)} in '{path}'; "
-            f"valid keys: {sorted(valid)}"
+            f"unknown key(s) {sorted(unknown)} in '{path}'; valid keys: {sorted(valid)}"
         )
 
 

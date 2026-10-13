@@ -145,7 +145,9 @@ class HuracanSFNOBlock(nn.Module):
         mlp_ratio: float,
     ):
         super().__init__()
-        self.filter = CompressedSpectralFilter(dim, dim, grid.lmax, k_filters, embed_dim)
+        self.filter = CompressedSpectralFilter(
+            dim, dim, grid.lmax, k_filters, embed_dim
+        )
         self.spec_norm = ConditionalLayerNorm(dim, embed_dim)
         self.mixer_norm = ConditionalLayerNorm(dim, embed_dim)
         self.mixer = SwinLatLonBlock(

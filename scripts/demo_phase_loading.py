@@ -47,7 +47,9 @@ THIN = "-" * 72
 
 
 def hdr(i: int, n: int, phase: str) -> None:
-    print(f"\n{LINE}\n[{i}/{n}] phase: {phase}   (trains: {'+'.join(ACTIVE_MODELS[phase])})\n{LINE}")
+    print(
+        f"\n{LINE}\n[{i}/{n}] phase: {phase}   (trains: {'+'.join(ACTIVE_MODELS[phase])})\n{LINE}"
+    )
 
 
 def call_schedule(pc) -> str:
@@ -80,32 +82,45 @@ def demo_phase(cfg, phase: str, i: int, n: int, workdir: Path) -> None:
         rtxt = f"rollout_assim={pc.rollout_assim}, rollout_fcst={pc.rollout_fcst}"
     else:
         rtxt = f"rollout={pc.rollout}"
-    print(f"  config : steps={pc.steps} lr={pc.lr:.1e} loss={pc.loss} "
-          f"schedule={pc.schedule} noise={pc.noise} obs={pc.obs}")
-    print(f"           {rtxt} -> n_calls={pc.n_calls()}, "
-          f"split_assim={pc.split_assim()}")
-    print(f"           unroll schedule: {call_schedule(pc)}"
-          f"   M={cfg.train.ensemble if pc.noise else 1} members")
+    print(
+        f"  config : steps={pc.steps} lr={pc.lr:.1e} loss={pc.loss} "
+        f"schedule={pc.schedule} noise={pc.noise} obs={pc.obs}"
+    )
+    print(
+        f"           {rtxt} -> n_calls={pc.n_calls()}, split_assim={pc.split_assim()}"
+    )
+    print(
+        f"           unroll schedule: {call_schedule(pc)}"
+        f"   M={cfg.train.ensemble if pc.noise else 1} members"
+    )
 
     # -- fresh module, exactly as fit_phase builds it ----------------------
     torch.manual_seed(cfg.seed + 1000 + i)
     module = HuracanLitModule(cfg, phase)
     fcst, assim = module.fcst, module.assim
     fcst_n_in = fcst.n_in
-    print(f"  models : fcst embed Linear({fcst.n_in} -> {fcst.embed.out_features})   "
-          f"assim embed Linear({assim.n_in} -> {assim.embed.out_features})   "
-          f"(assim encoder +{assim.n_in - fcst.n_in} obs columns)")
+    print(
+        f"  models : fcst embed Linear({fcst.n_in} -> {fcst.embed.out_features})   "
+        f"assim embed Linear({assim.n_in} -> {assim.embed.out_features})   "
+        f"(assim encoder +{assim.n_in - fcst.n_in} obs columns)"
+    )
 
     # -- weight loading: the interesting part ------------------------------
     if pc.init is None:
-        print(f"  init   : {pc.init!r} -> weights stay at fresh random init "
-              f"(fcst embed sum {fp(fcst.embed.weight.data)})")
+        print(
+            f"  init   : {pc.init!r} -> weights stay at fresh random init "
+            f"(fcst embed sum {fp(fcst.embed.weight.data)})"
+        )
     else:
-        ck = io.load_phase(workdir, pc.init)          # the only torch.load path
+        ck = io.load_phase(workdir, pc.init)  # the only torch.load path
         src = ck["models"]["fcst"] if "fcst" in ck["models"] else ck["models"]["assim"]
-        print(f"  init   : {pc.init!r} -> {io.phase_path(workdir, pc.init).name} "
-              f"[models in ckpt: {'+'.join(ck['models'])}]")
-        print(f"           loading through core/io.load_phase + PhaseInitCallback.on_train_start")
+        print(
+            f"  init   : {pc.init!r} -> {io.phase_path(workdir, pc.init).name} "
+            f"[models in ckpt: {'+'.join(ck['models'])}]"
+        )
+        print(
+            f"           loading through core/io.load_phase + PhaseInitCallback.on_train_start"
+        )
 
         if phase in ("assim", "joint"):
             obs_cols_before = assim.embed.weight.data[:, fcst_n_in:].clone()
@@ -115,39 +130,58 @@ def demo_phase(cfg, phase: str, i: int, n: int, workdir: Path) -> None:
         PhaseInitCallback(cfg, phase, workdir).on_train_start(None, module)
 
         if phase in ("stochastic", "fcst_ar", "hybrid"):
-            print(f"           fcst embed sum: {fp(fcst_before)} -> {fp(fcst.embed.weight.data)}  "
-                  f"exact copy from ckpt: {'OK' if sd_exact(fcst, src) else 'MISMATCH'}")
+            print(
+                f"           fcst embed sum: {fp(fcst_before)} -> {fp(fcst.embed.weight.data)}  "
+                f"exact copy from ckpt: {'OK' if sd_exact(fcst, src) else 'MISMATCH'}"
+            )
         elif phase == "assim":
-            inh = assim.embed.weight.data[:, : src['embed.weight'].shape[1]]
-            print(f"           assim embed sum: {fp(assim_before)} -> {fp(assim.embed.weight.data)}")
-            print(f"           inherited cols [0:{src['embed.weight'].shape[1]}] match ckpt: "
-                  f"{'OK' if torch.equal(inh, src['embed.weight']) else 'MISMATCH'}")
-            print(f"           new obs cols [{fcst_n_in}:{assim.n_in}] untouched by load "
-                  f"(stay random): "
-                  f"{'OK' if torch.equal(assim.embed.weight.data[:, fcst_n_in:], obs_cols_before) else 'MISMATCH'}")
+            inh = assim.embed.weight.data[:, : src["embed.weight"].shape[1]]
+            print(
+                f"           assim embed sum: {fp(assim_before)} -> {fp(assim.embed.weight.data)}"
+            )
+            print(
+                f"           inherited cols [0:{src['embed.weight'].shape[1]}] match ckpt: "
+                f"{'OK' if torch.equal(inh, src['embed.weight']) else 'MISMATCH'}"
+            )
+            print(
+                f"           new obs cols [{fcst_n_in}:{assim.n_in}] untouched by load "
+                f"(stay random): "
+                f"{'OK' if torch.equal(assim.embed.weight.data[:, fcst_n_in:], obs_cols_before) else 'MISMATCH'}"
+            )
             other = {k: v for k, v in src.items() if k != "embed.weight"}
-            print(f"           all other tensors copied exactly: "
-                  f"{'OK' if all(torch.equal(assim.state_dict()[k], v) for k, v in other.items()) else 'MISMATCH'}")
+            print(
+                f"           all other tensors copied exactly: "
+                f"{'OK' if all(torch.equal(assim.state_dict()[k], v) for k, v in other.items()) else 'MISMATCH'}"
+            )
         elif phase == "joint":
             srca = ck["models"]["assim"]
             ckf = io.load_phase(workdir, pc.fcst_init)
-            print(f"           assim <- ckpt_{pc.init}: exact copy: "
-                  f"{'OK' if sd_exact(assim, srca) else 'MISMATCH'}")
-            print(f"           fcst  <- ckpt_{pc.fcst_init} (fcst_init): exact copy: "
-                  f"{'OK' if sd_exact(fcst, ckf['models']['fcst']) else 'MISMATCH'}")
+            print(
+                f"           assim <- ckpt_{pc.init}: exact copy: "
+                f"{'OK' if sd_exact(assim, srca) else 'MISMATCH'}"
+            )
+            print(
+                f"           fcst  <- ckpt_{pc.fcst_init} (fcst_init): exact copy: "
+                f"{'OK' if sd_exact(fcst, ckf['models']['fcst']) else 'MISMATCH'}"
+            )
 
     # -- placeholder checkpoint so the chain can continue ------------------
     io.save_phase(workdir, phase, step=0, state_dicts=module.state_dicts())
-    print(f"  saved  : {io.phase_path(workdir, phase).name} "
-          f"[models: {'+'.join(module.state_dicts())}]  (placeholder; a real run "
-          f"saves this after training via PhaseRunCallback)")
+    print(
+        f"  saved  : {io.phase_path(workdir, phase).name} "
+        f"[models: {'+'.join(module.state_dicts())}]  (placeholder; a real run "
+        f"saves this after training via PhaseRunCallback)"
+    )
 
     # -- data shapes --------------------------------------------------------
     ds = SphereDataset(cfg, "train", rollout=pc.n_calls())
     b = ds[0]
-    frames = 2 * pc.n_calls() + 2
-    print(f"  data   : len(dataset)={len(ds)}  block = 2*{pc.n_calls()}+2 = "
-          f"{frames} frames (t0-1 .. t0+{2 * pc.n_calls()})")
+    opc = cfg.model.outputs_per_call
+    frames = cfg.call_semantics().window_frames(pc.n_calls())
+    print(
+        f"  data   : len(dataset)={len(ds)}  block = 2+{opc}*{pc.n_calls()} = "
+        f"{frames} frames (t0-1 .. t0+{opc * pc.n_calls()})"
+    )
     for k in ("state", "forcing", "obs"):
         print(f"           {k:7s} {tuple(b[k].shape)}")
 
@@ -164,8 +198,10 @@ def demo_phase(cfg, phase: str, i: int, n: int, workdir: Path) -> None:
             use_noise=pc.noise,
         )
     m = cfg.train.ensemble if pc.noise else 1
-    print(f"  unroll : preds {tuple(preds.shape)}   (B=1, M={m}, "
-          f"{2 * pc.n_calls()} frames)")
+    print(
+        f"  unroll : preds {tuple(preds.shape)}   (B=1, M={m}, "
+        f"{opc * pc.n_calls()} frames)"
+    )
     print(f"           targets {tuple(targets.shape)}   (= state[:, 2:], ERA5 truth)")
 
 
@@ -175,24 +211,35 @@ def demo_inference_loading(cfg, workdir: Path) -> None:
 
     runner = EdaRunner.from_checkpoints(cfg, workdir, device=dev)
     print(f"  branch 1: ckpt_joint.pt present -> assim + fcst both from joint")
-    print(f"            loaded: assim embed in_features={runner.assim.embed.in_features}, "
-          f"fcst embed in_features={runner.fcst.embed.in_features}")
+    print(
+        f"            loaded: assim embed in_features={runner.assim.embed.in_features}, "
+        f"fcst embed in_features={runner.fcst.embed.in_features}"
+    )
 
     joint = io.phase_path(workdir, "joint")
     bak = joint.with_suffix(".bak")
     shutil.move(joint, bak)
     runner2 = EdaRunner.from_checkpoints(cfg, workdir, device=dev)
-    print(f"  branch 2: ckpt_joint.pt removed -> fallback: assim <- ckpt_assim.pt, "
-          f"fcst <- ckpt_fcst_ar.pt")
-    print(f"            loaded: assim embed in_features={runner2.assim.embed.in_features}, "
-          f"fcst embed in_features={runner2.fcst.embed.in_features}")
+    print(
+        f"  branch 2: ckpt_joint.pt removed -> fallback: assim <- ckpt_assim.pt, "
+        f"fcst <- ckpt_fcst_ar.pt"
+    )
+    print(
+        f"            loaded: assim embed in_features={runner2.assim.embed.in_features}, "
+        f"fcst embed in_features={runner2.fcst.embed.in_features}"
+    )
     shutil.move(bak, joint)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default=str(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml"))
-    ap.add_argument("--workdir", default=None, help="demo workdir (default runs/demo_phase_loading)")
+    ap.add_argument(
+        "--config",
+        default=str(Path(__file__).resolve().parents[1] / "configs" / "smoke.yaml"),
+    )
+    ap.add_argument(
+        "--workdir", default=None, help="demo workdir (default runs/demo_phase_loading)"
+    )
     args = ap.parse_args()
 
     t0 = time.time()
@@ -212,8 +259,10 @@ def main():
     print(THIN)
     _m = HuracanLitModule(cfg, "deterministic")  # builds both models at once
     fcst, assim = _m.fcst, _m.assim
-    print(f"  n_state={fcst.n_state}  n_forcing={cfg.n_forcing()}  "
-          f"n_obs={cfg.n_obs_channels()}")
+    print(
+        f"  n_state={fcst.n_state}  n_forcing={cfg.n_forcing()}  "
+        f"n_obs={cfg.n_obs_channels()}"
+    )
     print(f"  fcst.n_in  = 2*(state+forcing)             = {fcst.n_in}")
     print(f"  assim.n_in = 2*(state+forcing) + 2*n_obs    = {assim.n_in}")
     print(f"  params: fcst {sum(p.numel() for p in fcst.parameters()) / 1e6:.3f}M")
@@ -224,7 +273,7 @@ def main():
     demo_inference_loading(cfg, workdir)
 
     print(f"\ncheckpoints now in {workdir}:")
-    for p in sorted(workdir.glob('ckpt_*.pt')):
+    for p in sorted(workdir.glob("ckpt_*.pt")):
         print(f"  {p.name}")
 
     print(f"\ndone in {time.time() - t0:.1f}s")

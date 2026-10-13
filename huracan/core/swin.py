@@ -40,9 +40,7 @@ class WindowAttention2D(nn.Module):
         nn.init.trunc_normal_(self.rel, std=0.02)
         ys = torch.arange(wh)
         xs = torch.arange(ww)
-        coords = torch.stack(
-            torch.meshgrid(ys, xs, indexing="ij"), dim=0
-        ).view(2, -1)
+        coords = torch.stack(torch.meshgrid(ys, xs, indexing="ij"), dim=0).view(2, -1)
         rel_idx = torch.stack(
             [
                 coords[0, :, None] - coords[0, None, :] + wh - 1,
@@ -81,9 +79,7 @@ class SwinLatLonBlock(nn.Module):
         if wh % 2 or ww % 2:
             raise ValueError(f"window sides must be even, got {window}")
         if nlat % wh or nlon % ww:
-            raise ValueError(
-                f"window {window} must divide the grid ({nlat} x {nlon})"
-            )
+            raise ValueError(f"window {window} must divide the grid ({nlat} x {nlon})")
         self.nlat, self.nlon = nlat, nlon
         self.wh, self.ww = wh, ww
         self.shift = (wh // 2, ww // 2)

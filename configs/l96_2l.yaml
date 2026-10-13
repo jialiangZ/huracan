@@ -1,0 +1,75 @@
+# L96-2L ablation (DATA_PLAN Sec. 3.3): two-scale Lorenz-96, Wilks-2005
+# parameters aligned with Chattopadhyay et al. 2020 (K=36 slow X, J=10
+# fast Y per X, h=1, b=10, c=10, F=8).  The stored state is X ONLY --
+# the fast Y variables are unresolved subgrid dynamics the learned
+# assimilation must cope with without a model of them.
+#
+#   .venv/bin/python scripts/generate_lorenz96.py --config configs/l96_2l.yaml
+#   CUDA_VISIBLE_DEVICES=0 .venv/bin/python scripts/train.py \
+#       --config configs/l96_2l.yaml --phase all
+run_name: l96_2l
+output_dir: runs/l96_2l
+device: cuda
+seed: 0
+grid:
+  nlat: 1
+  nlon: 36
+  lmax: 35
+model:
+  backbone: mlp1d
+  hidden: 96
+  blocks: 4
+  conv_kernel: 9
+  mlp_ratio: 4.0
+  noise_dim: 4
+  noise_embed_dim: 32
+  prediction: residual
+data:
+  source: lorenz96_2l
+  root: data
+  variables:
+    upper: [x]
+    levels: [500]
+    surface: []
+  forcing: [f]
+  obs:
+    enabled: true
+    surface_vars: []
+  train_period: [1, 29968]
+  val_period: [30001, 34968]
+  test_period: [35001, 39968]
+  lorenz96:
+    two_scale: true
+    n_slow: 36
+    n_fast_per_slow: 10
+    coupling_h: 1.0
+    coupling_b: 10.0
+    coupling_c: 10.0
+    fast_substeps: 10
+    forcing_f: 8.0
+    dt: 0.05
+    warmup_steps: 2000
+    train_steps: 30000
+    val_steps: 5000
+    test_steps: 5000
+    obs_every: 2               # 18/36 slow variables report
+    obs_sigma: 1.0
+train:
+  batch_size: 32
+  ensemble: 2
+  num_workers: 2
+  phases:
+    deterministic: {steps: 4000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 2000, lr: 3e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 400, lr: 1e-5, loss: crps, rollout: 2, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 6000, lr: 3e-4, loss: crps, rollout: 8, noise: true,
+                  obs: true, init: stochastic, ic_noise: 0.6}
+    joint:       {steps: 1500, lr: 1e-5, loss: crps, rollout_assim: 8,
+                  rollout_fcst: 8, noise: true, obs: true, init: assim,
+                  fcst_init: fcst_ar, ic_noise: 0.6}
+eval:
+  members: 8
+  spinup_calls_override: 25
+  lead_calls_override: 50

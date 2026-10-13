@@ -127,7 +127,11 @@ class MatrixSHT(nn.Module):
         if f.exists():
             z = np.load(f)
             B, Fwd, lidx, midx, kind = (
-                z["B"], z["Fwd"], z["lidx"], z["midx"], z["kind"]
+                z["B"],
+                z["Fwd"],
+                z["lidx"],
+                z["midx"],
+                z["kind"],
             )
         else:
             colat, lon = grid.colat, grid.lon_flat
