@@ -29,6 +29,10 @@ regress:
       spin-up consumes 241 obs frames.
   R12 run() exposes persistence_init = the ERA5 field at forecast start
       (never a future verification field).
+  R13 IGRA v2.2 field semantics: RH is in TENTHS OF A PERCENT (raw 500 =
+      50.0 %, must not clip to saturation) and -8888 means "removed by
+      IGRA quality assurance" -- dropped per field while valid fields at
+      the same level survive.
 
 Usage:  .venv/bin/python tests/test_p0_regressions.py
 """
@@ -99,7 +103,7 @@ def test_isd_sentinels_and_physical_zero():  # R1 + R2
     print("  R1/R2 ISD sentinel + physical-zero handling      OK")
 
 
-def _igra_head(hour: int) -> str:
+def _igra_head(hour: int, numlev: int = 2) -> str:
     buf = [" "] * 80
 
     def put(start, text):
@@ -111,7 +115,7 @@ def _igra_head(hour: int) -> str:
     put(21, "01")
     put(24, f"{hour:02d}")
     put(27, "0000")
-    put(31, "2".rjust(5))
+    put(31, str(numlev).rjust(5))
     put(37, "ncdc-gts")
     put(55, "367000")  # lat 36.7 (x1e4)
     put(63, "672000")  # lon 67.2 (x1e4)
@@ -156,6 +160,48 @@ def test_igra_sentinels_and_hour99():  # R1 + R3
     )
     assert profs[0][0] == dt.datetime(2010, 1, 1, 0)
     print("  R1/R3 IGRA sentinel + hour-99 skip              OK")
+
+
+def test_igra_v22_units_and_qa_codes():  # R13
+    """IGRA v2.2: RH in tenths of a percent; -8888 = removed by IGRA QA."""
+    # 850 hPa / 10.0 C / RH raw 500 (= 50.0 %), all fields valid
+    lev_ok = _igra_level(85000, 1500, 100, 500, 270, 123)
+    lev_t_qa = _igra_level(70000, 3100, -8888, 500, 270, 123)  # TEMP QA-removed
+    lev_z_qa = _igra_level(50000, -8888, -70, 400, 270, 123)  # GPH QA-removed
+    lev_w_qa = _igra_level(40000, 7400, -50, 300, 270, -8888)  # WSPD QA-removed
+    with tempfile.TemporaryDirectory() as d:
+        z = Path(d) / "XXXXXXXXXXX.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr(
+                "data.txt",
+                _igra_head(0, numlev=4)
+                + lev_ok + lev_t_qa + lev_z_qa + lev_w_qa,
+            )
+        profs = list(parse_igra_zip(z, [850, 700, 500, 400]))
+    assert len(profs) == 1
+    prof = profs[0][3]
+    # RH unit oracle: raw 500 means 50.0 % -- must equal f(50), and must
+    # NOT be saturation (the old code fed 500 into a %-expecting clip).
+    from huracan.data.obs import rh_to_specific_humidity
+
+    q = prof[850]["q"]
+    q_sat = rh_to_specific_humidity(100.0, 10.0, 85000.0)
+    q_50 = rh_to_specific_humidity(50.0, 10.0, 85000.0)
+    assert abs(q - q_50) < 1e-12, f"RH /10 missing: q={q} want {q_50}"
+    assert q < 0.55 * q_sat, f"RH=500 leaked through as saturation: {q} vs {q_sat}"
+    # per-field QA removal: the -8888 field is dropped, the other valid
+    # fields AT THE SAME LEVEL survive (never discard the whole level)
+    assert "t" not in prof[700] and "q" not in prof[700], (
+        "QA-removed TEMP (-8888) leaked into the profile"
+    )
+    assert "z" in prof[700] and "u" in prof[700] and "v" in prof[700]
+    assert "z" not in prof[500], "QA-removed GPH (-8888) leaked into z"
+    assert "t" in prof[500] and "q" in prof[500]
+    assert "u" not in prof[400] and "v" not in prof[400], (
+        "QA-removed WSPD (-8888) leaked into winds"
+    )
+    assert "t" in prof[400]
+    print("  R13 IGRA v2.2 RH units + -8888 QA codes         OK")
 
 
 def test_snap_to_frame_forward_window():  # R4
@@ -319,30 +365,57 @@ def test_metrics_hand_checks():  # R8
     print("  R8 metrics empirical/fair/ESSR modes            OK")
 
 
-def test_weighted_losses():  # R9
-    # NB: B, M, D are all distinct so accidental broadcasting cannot pass
+def test_weighted_losses():  # R9 (independent oracles, NOT implementation echoes)
+    # NB: B, M, D, P, C are all distinct so accidental broadcasting cannot
+    # pass; P != C so a channel/pixel axis mix-up changes the result.
     B, M, D, P, C = 3, 2, 4, 5, 2
-    tgt = torch.randn(B, D, P, C)
-    w = torch.rand(P) + 0.1
-    pred = torch.randn(B, D, P, C)
-    got = l1_loss(pred, tgt, w)
-    flat = (pred - tgt).abs().mean(-1)  # (B,D,P)
-    want = ((flat * w).sum(-1) / w.sum()).mean()
-    assert torch.allclose(got, want, rtol=1e-5)
-    ens = torch.randn(B, M, D, P, C)
-    got_c = crps_loss(ens, tgt, w)
-    t1 = (ens - tgt.unsqueeze(1)).abs().mean(dim=1)  # E_m |X - y|
-    diff = (ens.unsqueeze(2) - ens.unsqueeze(1)).abs()
-    off = diff.sum(dim=(1, 2)) / (M * (M - 1))
-    base = t1 - 0.5 * off  # (B,D,P,C)
-    want_c = ((base * w[..., None]).sum(-1) / w.sum()).mean()
-    assert torch.allclose(got_c, want_c, rtol=1e-5)
-    # unweighted path unchanged vs plain mean
-    assert torch.allclose(l1_loss(pred, tgt), (pred - tgt).abs().mean())
-    assert torch.allclose(
-        crps_loss(ens, tgt), (t1 - 0.5 * off).mean()
-    )
-    print("  R9 weighted losses                               OK")
+    rng = torch.Generator().manual_seed(0)
+    tgt = torch.randn(B, D, P, C, generator=rng)
+    w = torch.rand(P, generator=rng) + 0.1
+    pred = torch.randn(B, D, P, C, generator=rng)
+    ens = torch.randn(B, M, D, P, C, generator=rng)
+
+    # oracle 1: uniform weights must reproduce the unweighted path exactly
+    # (the old channel-axis bug made the two differ by C/P).
+    assert torch.allclose(l1_loss(pred, tgt, torch.ones(P)),
+                          l1_loss(pred, tgt), rtol=1e-6)
+    assert torch.allclose(crps_loss(ens, tgt, torch.ones(P)),
+                          crps_loss(ens, tgt), rtol=1e-6)
+
+    # oracle 2 (shift oracle, pure hand math): all members identical and
+    # equal to target + a -> CRPS = |a| for ANY pixel weighting (E_m|X-y|
+    # = |a|, pairwise member terms vanish).  The old channel-axis bug
+    # returns |a| * C / P instead, so this catches it on any weights.
+    a = 0.7
+    ens_shift = tgt.unsqueeze(1) + a  # every member == target + a
+    for ww in (w, torch.ones(P), torch.rand(P, generator=rng) + 0.5):
+        got = crps_loss(ens_shift, tgt, ww)
+        assert torch.allclose(got, torch.tensor(a), rtol=1e-5), got
+
+    # oracle 3 (pixel-weighted mean, fully hand-computed): M=2, target 0,
+    # members {1,3} on pixel 0 and {2,4} on pixel 1 (all channels equal):
+    #   pixel 0: term1 = 2, pair |1-3| = 2 -> fair base = 2 - 0.5*2 = 1
+    #   pixel 1: term1 = 3, pair |2-4| = 2 -> fair base = 3 - 0.5*2 = 2
+    #   weighted mean with w = (1, 3):  (1*1 + 3*2)/4 = 1.75 ; plain 1.5
+    e2 = torch.zeros(1, 2, 1, 2, C)
+    e2[0, 0, 0, 0, :] = 1.0
+    e2[0, 1, 0, 0, :] = 3.0
+    e2[0, 0, 0, 1, :] = 2.0
+    e2[0, 1, 0, 1, :] = 4.0
+    t2 = torch.zeros(1, 1, 2, C)
+    w2 = torch.tensor([1.0, 3.0])
+    assert torch.allclose(crps_loss(e2, t2, w2), torch.tensor(1.75), rtol=1e-5)
+    assert torch.allclose(crps_loss(e2, t2), torch.tensor(1.5), rtol=1e-5)
+    got_l1 = l1_loss(pred, tgt, w)
+    flat = (pred - tgt).abs().mean(-1)  # (B,D,P) channel mean first
+    want_l1 = ((flat * w).sum(-1) / w.sum()).mean()
+    assert torch.allclose(got_l1, want_l1, rtol=1e-5)
+
+    # oracle 4: gradients flow and are finite
+    ens_g = ens.clone().requires_grad_(True)
+    crps_loss(ens_g, tgt, w).backward()
+    assert ens_g.grad is not None and torch.isfinite(ens_g.grad).all()
+    print("  R9 weighted losses (independent oracles)           OK")
 
 
 def test_bsef_split_exact_years():  # R10
@@ -404,6 +477,7 @@ def test_persistence_init_field():  # R12
 if __name__ == "__main__":
     test_isd_sentinels_and_physical_zero()
     test_igra_sentinels_and_hour99()
+    test_igra_v22_units_and_qa_codes()
     test_snap_to_frame_forward_window()
     test_build_obs_tensor_bundle()
     test_dataset_window_stays_in_split()

@@ -126,29 +126,35 @@ def parse_igra_zip(path, levels):
                 p_raw = int(row[9:15])  # Pa
                 gph = int(row[16:21])  # m
                 temp_raw = int(row[22:27])  # 0.1 C
-                rh_raw = int(row[28:33])  # %
+                rh_raw = int(row[28:33])  # 0.1 % (IGRA v2.2: tenths of %)
                 wdir_raw = int(row[40:45])  # deg
                 wspd_raw = int(row[46:51])  # 0.1 m/s
             except ValueError:
                 continue
-            # every sentinel check happens on the RAW integer, before any
+            # Every sentinel check happens on the RAW integer, before any
             # unit conversion (P0 fix; the old code divided wind speed by
             # 10 first, turning a missing -9999 into a valid-looking
-            # -999.9 m/s)
-            if p_raw == -9999 or p_raw <= 0:
+            # -999.9 m/s).  IGRA v2.2 defines TWO sentinels for
+            # GPH/TEMP/RH/DPDP/WDIR/WSPD: -9999 = missing prior to QA,
+            # -8888 = removed by IGRA quality assurance.  Both are dropped
+            # PER FIELD so valid fields at the same level survive.
+            MISSING = (-9999, -8888)
+            if p_raw == -9999 or p_raw <= 0:  # PRESS only defines -9999
                 continue
             p = p_raw / 100.0  # hPa
             lev = min(levels, key=lambda L: abs(L - p))
             if abs(lev - p) > 2.0 or lev in prof:
                 continue
             v = {}
-            if gph != -9999:
+            if gph not in MISSING:
                 v["z"] = gph * 9.80665
-            if temp_raw != -9999:
+            if temp_raw not in MISSING:
                 v["t"] = temp_raw / 10.0 + 273.15
-            if rh_raw != -9999 and temp_raw != -9999:
-                v["q"] = rh_to_specific_humidity(rh_raw, temp_raw / 10.0, p * 100.0)
-            if wdir_raw != -9999 and wspd_raw != -9999:
+            if rh_raw not in MISSING and temp_raw not in MISSING:
+                v["q"] = rh_to_specific_humidity(
+                    rh_raw / 10.0, temp_raw / 10.0, p * 100.0
+                )
+            if wdir_raw not in MISSING and wspd_raw not in MISSING:
                 wspd = wspd_raw / 10.0
                 d = np.deg2rad(wdir_raw)
                 v["u"] = -wspd * np.sin(d)

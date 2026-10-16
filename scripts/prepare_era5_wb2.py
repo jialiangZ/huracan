@@ -204,11 +204,14 @@ def main():
                 f"assembled {off} frames for {name} but times has {T}; "
                 f"chunk years do not cover the requested range"
             )
-        if (state[:, :, i] == 0).all(axis=(1, 2)).any():
+        chan = state[:, :, i]  # (T, npix) -- all-axis=1 gives per-frame flags
+        if (chan == 0).all(axis=1).any():
             raise ValueError(
                 f"channel {name} contains all-zero frames after assembly "
                 f"(fetch failures must not be silently zeroed)"
             )
+        if not np.isfinite(chan).all():
+            raise ValueError(f"channel {name} contains non-finite values")
         print(f"  assembled {name}", flush=True)
     # cross-check year boundaries against the time axis
     off = 0

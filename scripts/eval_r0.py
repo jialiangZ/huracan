@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""P1 deliverable: R0 baseline metrics on the validation year (2012).
+"""R0 baseline metrics on the validation year (2012) -- v2 (2026-10-16).
 
-Three controls per start time, same seeds/spin-up/lead (4090 plan §3):
-  obs      -- normal assimilation (the R0 model)
-  zero-obs -- obs channels zeroed (architecture identical, no obs info)
-  fcst     -- the FORECAST model cycling for the whole spin-up (a different
-              control: zero-obs on the assim net is NOT the fcst net)
-
-Metrics: empirical CRPS (main), fair CRPS (training estimator, reported
-separately), ESSR (RMS spread/RMSE + mean-std variant), RMSE(ens mean),
-persistence baseline = ERA5 field at forecast initialization.
-
-Checkpoints: --ckpt best|load (default best = selected by held-out
-validation loss; test data never used for selection).
+Changes vs v1 (external review F6):
+  * THREE persistence references, clearly separated by information budget:
+      - sys_persist   : each member's OWN release state (spin-up end)
+                       persisted through the forecast window -> an honest
+                       same-information ensemble baseline;
+      - sys_mean_pers : the deterministic variant (ensemble-mean state);
+      - era5_persist  : the ERA5 analysis at release time -- an
+                       ERA5-initialized reference with MORE information
+                       than the system owns; reported separately, never
+                       as the primary skill denominator.
+  * dual lead-time convention: ``lead_from_release`` (6h at the first
+    scored frame) and ``lead_from_cutoff`` (12h there; the last absorbed
+    observation is one frame before the release state).
+  * per-start metrics are saved (not only 4-window means), with cutoff /
+    release frame indices and checkpoint hashes; output is a real .npz.
 
 Usage:
   python scripts/eval_r0.py --config configs/bsef_r0.yaml \
-      --workdir runs/bsef/r0 --out runs/bsef/r0_eval \
+      --workdir runs/bsef/r0 --out runs/bsef/r0_eval_v2 \
       --starts 2012-01-15 2012-04-15 2012-07-15 2012-10-15
 """
 
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -46,9 +50,19 @@ from huracan.core.model import build_models
 from huracan.core.rollout import spinup_and_forecast
 from huracan.data.dataset import SphereDataset
 
+METRICS = ("crps", "crps_fair", "essr", "essr_mean_std", "rmse")
+
+
+def _sha(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()[:16]
+
 
 @torch.no_grad()
-def run_control(cfg, assim, fcst, ds, t0, control, device, kind):
+def run_control(cfg, assim, fcst, ds, t0, control, device):
     sem = cfg.call_semantics()
     S, F = cfg.spinup_calls(), cfg.lead_calls()
     window = ds.window(t0, sem.window_frames(S + F))
@@ -64,40 +78,57 @@ def run_control(cfg, assim, fcst, ds, t0, control, device, kind):
     else:
         obs_use = obs_full[: sem.obs_frames(S)]
         assim_in, fcst_in = assim, fcst
-    out = spinup_and_forecast(
+    spin_end, preds = spinup_and_forecast(
         assim_in, fcst_in, state, forcing, obs_use,
         members=cfg.eval.members, spinup=S, lead=F,
         collect_spinup=False,
     )
-    s0 = 1 * S + 2  # opc=1
-    truth = state[s0 : s0 + 1 * F].cpu()
-    persist = state[s0 - 1].cpu()
-    preds = out[1].numpy()
-    truth = truth.numpy()
-    persist = persist.numpy()
+    release = 1 * S + 1   # assim output frame produced from the last obs
+    s0 = release + 1      # first forecast frame (scored window starts)
+    truth = state[s0 : s0 + F].cpu().numpy()          # (F, N, C)
+    preds = preds.numpy()                              # (M, F, N, C)
+    spin_end = spin_end.numpy()                        # (M, N, C) @ release
+    era5_rel = state[release].cpu().numpy()            # (N, C) ERA5 @ release
+    M = preds.shape[0]
+    sys_persist = np.repeat(spin_end[:, None], F, axis=1)      # (M,F,N,C)
+    era5_persist = np.repeat(era5_rel[None], F, axis=0)[None]  # (1,F,N,C)
+    sys_mean = np.repeat(spin_end.mean(0)[None], F, axis=0)[None]
     w = grid_from_cfg(cfg.grid).pixel_weights
-    return {
-        "crps": crps_ensemble(preds, truth, w),
-        "crps_fair": crps_fair(preds, truth, w),
-        "essr": essr(preds, truth, w, mode="rms"),
-        "essr_mean_std": essr(preds, truth, w, mode="mean_std"),
-        "rmse": rmse_ensemble_mean(preds, truth, w),
-        "crps_persist": crps_ensemble(
-            np.repeat(np.repeat(persist[None], truth.shape[0], 0)[None],
-                      preds.shape[0], 0), truth, w
-        ),
-        "rmse_persist": rmse_ensemble_mean(
-            np.repeat(persist[None], truth.shape[0], 0)[None], truth, w
-        ),
-        "spinup_end": out[0].numpy(),
+    out = {
+        "release_frame": release,
+        "cutoff_frame": release - 1,
+        "lead_from_release_h": np.arange(1, F + 1) * 6,
+        "lead_from_cutoff_h": np.arange(2, F + 2) * 6,
     }
+    # the release state IS the system's 6h-from-cutoff prediction (it was
+    # produced by the last assim call absorbing obs <= cutoff): score it
+    # against truth at release -- the v9 "same-cutoff 6h" headline field.
+    truth_c6 = state[release : release + 1].cpu().numpy()      # (1,N,C)
+    ens_c6 = spin_end[:, None]                                  # (M,1,N,C)
+    out["cutoff6h_crps"] = np.atleast_1d(crps_ensemble(ens_c6, truth_c6, w))[0]
+    out["cutoff6h_crps_fair"] = np.atleast_1d(
+        crps_fair(ens_c6, truth_c6, w))[0]
+    out["cutoff6h_rmse"] = np.atleast_1d(
+        rmse_ensemble_mean(ens_c6, truth_c6, w))[0]
+    for name, ens in (
+        ("", preds),
+        ("sys_persist_", sys_persist),
+        ("era5_persist_", era5_persist),
+    ):
+        out[f"{name}crps"] = crps_ensemble(ens, truth, w)
+        out[f"{name}crps_fair"] = crps_fair(ens, truth, w)
+        out[f"{name}rmse"] = rmse_ensemble_mean(ens, truth, w)
+    out["sys_mean_persist_rmse"] = rmse_ensemble_mean(sys_mean, truth, w)
+    out["essr"] = essr(preds, truth, w, mode="rms")
+    out["essr_mean_std"] = essr(preds, truth, w, mode="mean_std")
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--workdir", default="runs/bsef/r0")
-    ap.add_argument("--out", default="runs/bsef/r0_eval")
+    ap.add_argument("--out", default="runs/bsef/r0_eval_v2")
     ap.add_argument("--starts", nargs="+",
                     default=["2012-01-15", "2012-04-15", "2012-07-15",
                              "2012-10-15"])
@@ -113,6 +144,7 @@ def main():
 
     sfx = "_best" if args.ckpt == "best" else ""
     fcst, assim = build_models(cfg)
+    ap_, fp_ = wd / f"ckpt_assim{sfx}.pt", wd / f"ckpt_fcst_ar{sfx}.pt"
     assim.load_state_dict(io.load_phase(wd, f"assim{sfx}")["models"]["assim"])
     fcst.load_state_dict(io.load_phase(wd, f"fcst_ar{sfx}")["models"]["fcst"])
     assim, fcst = assim.to(device).eval(), fcst.to(device).eval()
@@ -124,46 +156,48 @@ def main():
                                      / "times.json"))]
     names = cfg.var_names()
 
-    results = {}
+    results, per_start = {}, {}
+    keys = [f"{p}{m}" for p in ("", "sys_persist_", "era5_persist_")
+            for m in ("crps", "crps_fair", "rmse")] + \
+           ["sys_mean_persist_rmse", "essr", "essr_mean_std",
+            "cutoff6h_crps", "cutoff6h_crps_fair", "cutoff6h_rmse"]
     for control in ("obs", "zero-obs", "fcst"):
-        agg = {}
+        agg = {k: [] for k in keys}
         for start in args.starts:
             sd = dt.date.fromisoformat(start)
             t0 = next(i for i, t in enumerate(times)
                       if t.date() == sd and t.hour == 0)
             assert t0 in set(ds.valid_t0.tolist()), f"{start} t0={t0} illegal"
-            r = run_control(cfg, assim, fcst, ds, t0, control, device,
-                            args.ckpt)
-            for k in ("crps", "crps_fair", "essr", "essr_mean_std", "rmse",
-                      "crps_persist", "rmse_persist"):
-                agg.setdefault(k, []).append(r[k])
-            agg.setdefault("start_t0", []).append(t0)
+            r = run_control(cfg, assim, fcst, ds, t0, control, device)
+            for k in keys:
+                agg[k].append(np.asarray(r[k]))
+                per_start[(control, start, k)] = np.asarray(r[k])
             print(f"  [{control}] {start} t0={t0} done", flush=True)
-        results[control] = {
-            "start_t0": agg["start_t0"],
-            **{
-                m: np.mean(np.stack(agg[m]), 0)
-                for m in ("crps", "crps_fair", "essr", "essr_mean_std",
-                          "rmse", "crps_persist", "rmse_persist")
-            },
-        }
+        results[control] = {k: np.mean(np.stack(v), 0) for k, v in agg.items()}
         cr = results[control]["crps"].mean()
-        crp = results[control]["crps_persist"].mean()
-        print(f"{control}: mean empirical CRPS {cr:.4f} vs persistence "
-              f"{crp:.4f} (skill {1 - cr/crp:+.3f})", flush=True)
+        for ref in ("sys_persist_crps", "era5_persist_crps"):
+            print(f"{control}: CRPS {cr:.4f} vs {ref} "
+                  f"{results[control][ref].mean():.4f} "
+                  f"(skill {1 - cr / results[control][ref].mean():+.3f})",
+                  flush=True)
 
-    with open(out / "r0_eval.json", "wb") as f:
-        np.savez_compressed(
-            f,
-            names=np.array(names),
-            controls=np.array(list(results.keys())),
-            start_t0=np.array(results["obs"]["start_t0"]),
-            **{f"{c}_{m}": results[c][m]
-               for c in results
-               for m in ("crps", "crps_fair", "essr", "essr_mean_std", "rmse",
-                         "crps_persist", "rmse_persist")},
-        )
-    print(f"\nR0 evaluation -> {out / 'r0_eval.json'}")
+    starts_arr = [s.replace("-", "") for s in args.starts]
+    flat = {
+        f"ps_{c}_{sd}_{k}": v
+        for (c, s, k), v in per_start.items()
+        for sd in [s.replace("-", "")]
+    }
+    np.savez_compressed(
+        out / "r0_eval.npz",
+        names=np.array(names), controls=np.array(list(results.keys())),
+        starts=np.array(starts_arr),
+        ckpt_assim_sha=_sha(ap_), ckpt_fcst_ar_sha=_sha(fp_),
+        lead_from_release_h=np.arange(1, F + 1) * 6,
+        lead_from_cutoff_h=np.arange(2, F + 2) * 6,
+        **{f"{c}_{k}": results[c][k] for c in results for k in keys},
+        **flat,
+    )
+    print(f"\nR0 evaluation -> {out / 'r0_eval.npz'}")
 
 
 if __name__ == "__main__":

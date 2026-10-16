@@ -52,6 +52,9 @@ def crps_loss(
         base = term1 - 0.5 * offdiag
     if w is None:
         return base.mean()
-    pix = ensemble.dim() - 2  # pixel axis of (B, M, D, npix, C) -> 3
-    base = (base * w[..., None]).sum(dim=pix) / w.sum()
+    # weighted mean over the pixel axis of ``base`` -- which is (B, D, npix,
+    # C) after the member reduction, i.e. dim=-2.  (Do NOT index by
+    # ``ensemble.dim()-2``: that would hit the channel axis of ``base``
+    # and silently change the loss scale by C/npix.)
+    base = (base * w[..., None]).sum(dim=-2) / w.sum()
     return base.mean()
