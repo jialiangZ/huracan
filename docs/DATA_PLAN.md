@@ -1,6 +1,7 @@
-# AI4DA 四数据集详细方案（DATA PLAN v1.0）
+# AI4DA 跨域数据方案（DATA PLAN v1.1）
 
-> 2026-10-12 定稿。8 项关键决策已与使用者逐条确认（§0）。
+> 2026-10-12 定稿；**2026-10-16 修订：L96（D2）全线移除**（决策撤销，
+> 代码/数据/产物/测试清除），跨域谱系由 KF + JHTDB 承担。
 > 本方案遵循仓库既有原则：每个数据集 = 一个 nature-run 生成器/下载器 +
 > 观测合成 + 与 ERA5 管线逐字节一致的输出布局（state/obs/forcing/norms），
 > 下游训练 phases / EDA 循环 / CRPS/ESSR 评估**零改动复用**。
@@ -12,7 +13,7 @@
 | # | 决策项 | 选择 | 主要影响 |
 |---|--------|------|----------|
 | 1 | ERA5 年份 | ~~2010–2025~~ → **2010–2023（2023 仅至 01-10）** | 2026-10-12 实测：WB2 bucket 最新再网格化 zarr 即 `1959-2023_01_10-*`，时间轴止于 2023-01-10T18:00，无 2024/2025 → 按预案退守（§2.1） |
-| 2 | L96 变体 | **单尺度主线 + 双尺度消融** | 与全部前人可比，附赠多尺度实验 |
+| 2 | ~~L96 变体~~ | ~~单尺度主线 + 双尺度消融~~ → **2026-10-16 全线移除** | 决策撤销；§3 留移除记录 |
 | 3 | KF 实现 | **自研 PyTorch 伪谱求解器** | 可微 → EnKF / 4DVar 基线、ν 参数估计都可行 |
 | 4 | KF 分辨率 | **仅 128²** | 训练成本 ~4× 于 64²；放弃分辨率泛化维度（见 §4 回退预案） |
 | 5 | KF 粘度 | **多 ν 训练 + 参数估计实验** | 对齐 LEVDA / Xiao et al. 2026 趋势 |
@@ -27,28 +28,27 @@
 ### 1.1 数据源切换（沿用 `data.source` 模式）
 
 ```
-data.source: synthetic | turbulence | era5 | lorenz96 | kolmogorov | jhtdb
+data.source: synthetic | turbulence | era5 | kolmogorov | jhtdb
 ```
 
 | 数据集 | 新模块 | 状态 |
 |---|---|---|
-| L96 | `huracan/data/lorenz96.py` | ✅ 完成（1L 主线 + 2L 消融，数据已生成） |
+| ~~L96~~ | ~~`huracan/data/lorenz96.py`~~ | ❌ 2026-10-16 移除 |
 | KF | `huracan/data/kolmogorov.py` | ✅ 完成（numpy 伪谱 RK4 + 层流稳态/守恒测试；配置 `data.synthetic.kolmogorov`） |
 | JHTDB | `huracan/data/jhtdb.py` | ⬜ 待做（pyJHTDB/REST 下载器 + 本地缓存读取，**无求解器**） |
 
 ### 1.2 三处框架改动（**已全部完成**，2026-10-12）
 
-1. ~~**`config/schema.py`**~~ ✅：`Lorenz96Cfg` / `JhtdbCfg` 挂在 `data.*`；
+1. ~~**`config/schema.py`**~~ ✅：`JhtdbCfg` 挂在 `data.*`；
    KF 配置为 **`data.synthetic.kolmogorov`（`KolmoCfg`，与 turbulence 并列）**——
    由 kolmogorov.py 的实现锁定，此前计划的 `data.kolmogorov` 重复段已删除；
-   `DataCfg` 补 `test_period`；`ModelCfg` 增 `backbone: sfno|mlp1d` + `conv_kernel`。
+   `DataCfg` 补 `test_period`。（L96 相关字段已随移除清理。）
 2. ~~**`core/rollout.py` 帧语义参数化**~~ ✅：时间语义统一收进
    `huracan/time.py::CallSemantics`（`model.outputs_per_call` 配置，论文
    默认 2 = 一次调用 12h 双场；1 = GenCast 式单场/6h 变体）；
    `EvalCfg.spinup_calls_override / lead_calls_override` 直接以 AR call 计
    （换算入口移到根配置 `cfg.spinup_calls()` / `cfg.lead_calls()`）。
 3. **主干网络按几何分派**（同化编码器列、噪声嵌入、条件 LN、phase 编排全部复用）：
-   - L96：✅ `core/model1d.py`（`model.backbone: mlp1d`，循环卷积 + MLP）
    - KF：✅ `core/planar_fft.py`（`grid.type: planar`，PlanarSHT 注入同一 SFNO）
    - JHTDB：3D FNO 或 3D U-Net（64³ 输入，4090 需 grad checkpoint）
    - ERA5 / 球面 OSSE：保留现有 SFNO
@@ -57,8 +57,6 @@ data.source: synthetic | turbulence | era5 | lorenz96 | kolmogorov | jhtdb
 
 | 数据集 | 网格 | upper vars | levels | surface | 通道数 |
 |---|---|---|---|---|---|
-| L96-1L | 1×40（1D 周期） | x | [500]（占位） | 无 | 1 |
-| L96-2L | 1×36 | x | [500] | 无 | 1（Y 不进状态，见 §3.3） |
 | KF | 128×128（双周期） | w, u, v | [500] | 无 | 3 |
 | JHTDB | 64³ / 128³（三周期） | u, v, w | [500] | 无 | 3 |
 
@@ -101,36 +99,14 @@ data.source: synthetic | turbulence | era5 | lorenz96 | kolmogorov | jhtdb
 
 ---
 
-## 3. D2：Lorenz-96（主线 1L + 消融 2L）
+## 3. D2：Lorenz-96 —— ❌ 已移除（2026-10-16）
 
-### 3.1 L96-1L 规格（社区默认，最大可比性）
-
-| 项 | 规格 | 备注 |
-|---|---|---|
-| 系统 | K=40，F=8 | Brajard 2020 / KalmanNet / 潜空间 EnKF 同款 |
-| 积分 | RK4，dt=0.05 | 可微 PyTorch 实现 |
-| nature run | 3 条独立轨迹（不同 seed 初值 + 2000 步 warmup 丢弃）× 102,000 步 = 5,100 t.u. | ≈ 600 倍最大 Lyapunov 时间（λ₁≈0.9），充分采样吸引子 |
-| 划分 | 按时间 70/10/20，段间留 500 步缓冲（≈25 t.u. ≫ 去相关时间） | 跨轨迹混合防泄漏 |
-| 观测（默认） | 偶数索引 20 个变量，每步报数，σ=1.0 | obs_fraction 消融 {0.2, 0.5, 0.8} |
-| 归一化 | train 段逐变量 mean/std（=吸引子气候统计） | 存 norms 文件，同现有格式 |
-
-### 3.2 验证测试（`tests/test_lorenz96.py`）
-
-- 气候统计：变量方差 ≈ 文献值（F=8 时 var≈8 量级），与 DAPPER 结果交叉验证；
-- λ₁ 数值估计 ≈ 0.9±0.15；
-- EnKF（本地实现）在该数据上复现文献 RMSE 量级（作为正确性锚点）。
-
-### 3.3 L96-2L 消融规格
-
-| 项 | 规格 |
-|---|---|
-| 系统 | K=36 慢变量 X，每 X 带 J=10 快变量 Y；F=8，h=1，b=10，c=10（对齐 Chattopadhyay et al. 2020 的多尺度 L96） |
-| 积分 | X: dt=0.05；Y 项含 c·b≈100 快尺度 → Y 用内部子步（~5–10 子步，以稳定性校准） |
-| nature run | 3 × 30,000 步（warmup 2000 丢弃） |
-| 状态/观测 | **状态只含 X（36）**；Y 是未解析次网格过程（这正是卖点：学习 DA 时无需显式快尺度动力学）；观测偶数 X，σ=1 |
-| 用途 | 多尺度消融 + "未解析过程下的同化"叙事 |
-
-存储 < 100 MB，忽略不计。
+> 决策撤销：`huracan/data/lorenz96.py`、`core/model1d.py`（mlp1d 主干）、
+> `configs/l96*.yaml`、`scripts/generate_lorenz96.py`、`scripts/run_l96_controls.py`、
+> `tests/test_lorenz96.py`、`data/lorenz96*` 及全部 runs 产物均已删除。
+> 原规格（K=40/F=8 主线 + K=36/J=10 双尺度消融、偶数变量观测 σ=1、
+> 三对照协议）见 git 历史（commit 5c3a4eb）。跨域低维混沌验证改由
+> KF 64² OSSE（分钟级）承担。
 
 ---
 
@@ -246,15 +222,14 @@ f = A·sin(k_f·y)·ê_x          （Kolmogorov 强迫）
 
 ---
 
-## 6. 统一实验协议（四数据集一致）
+## 6. 统一实验协议（各数据集一致）
 
 1. 三对照：**with-obs / zero-obs / fcst-spinup**（复用 `run_osse.py`，同训练
    同种子）——"有观测时分析误差随循环下降"是每个数据集的第一判据；
 2. 指标：RMSE / fair-CRPS / ESSR + 每数据集物理指标
-   （L96：气候分布距离；KF：E(k) + ν̂ 误差；JHTDB：谱误差；ERA5：记分卡）；
+   （KF：E(k) + ν̂ 误差；JHTDB：谱误差；ERA5：记分卡）；
 3. 每个设置 3 seeds；观测密度 × 噪声 sweep（每数据集复用同一 nature run）；
-4. 基线总表：气候态、persistence（全数据集）+ EnKF/LETKF（L96、KF）+
-   4DVar（KF）+ （可选）DAPPER 交叉验证（L96）。
+4. 基线总表：气候态、persistence（全数据集）+ EnKF/LETKF（KF）+ 4DVar（KF）。
 
 ---
 
@@ -263,11 +238,10 @@ f = A·sin(k_f·y)·ê_x          （Kolmogorov 强迫）
 ### 7.1 新增文件清单
 
 ```
-huracan/data/lorenz96.py     scripts/generate_lorenz96.py    configs/l96.yaml ✅
 huracan/data/kolmogorov.py   (生成逻辑内置, 待 CLI)          configs/osse_kolmo.yaml ✅
 huracan/data/jhtdb.py        scripts/download_jhtdb.py       configs/jhtdb.yaml ⬜
-huracan/core/model1d.py (mlp1d 主干) / planar_fft.py (平面谱变换) ✅
-tests/test_lorenz96.py ✅  tests/test_kolmogorov.py ✅  tests/test_jhtdb.py ⬜
+huracan/core/planar_fft.py (平面谱变换) ✅
+tests/test_kolmogorov.py ✅  tests/test_jhtdb.py ⬜
 ```
 
 （顺序注意：schema/loader 先行 → 数据模块 → 配置，严格校验会拒绝超前配置。）
@@ -276,11 +250,11 @@ tests/test_lorenz96.py ✅  tests/test_kolmogorov.py ✅  tests/test_jhtdb.py �
 
 | 周 | 内容 |
 |---|---|
-| 0（并行挂机） | ERA5 16 年 + 观测下载；WB2 年份覆盖校验 |
-| 1–2 | 框架改动（§1.2）+ L96 全流程 + EnKF 锚点 |
+| 0（并行挂机） | ERA5 + 观测下载；WB2 年份覆盖校验 |
+| 1–2 | 框架改动（§1.2）（L96 原排期已随移除作废） |
 | 3–5 | KF 求解器 → 验证测试 → 数据生成 → 训练 + 4DVar 基线 |
 | 5–8 | JHTDB token/探索 → cutout 下载 → 3D 主干 → 实验 |
-| 8+ | 四数据集横向图表 + 论文实验章 |
+| 8+ | 跨数据集横向图表 + 论文实验章 |
 
 ---
 

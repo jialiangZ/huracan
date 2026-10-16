@@ -1,8 +1,11 @@
-# 创新方案：观测 token 化 + 流匹配集合生成（INNOVATION PLAN v1.0）
+# 创新方案：观测 token 化 + 流匹配集合生成（INNOVATION PLAN v1.1）
 
-> 2026-10-12 定稿。两项方法学创新（A：站点观测 token 化；B：流匹配
-> 集合生成），全部落在现有三对照 OSSE 协议（with-obs / zero-obs /
-> fcst-spinup）内验证，"with-obs 分析误差随循环下降"仍是第一判据。
+> 2026-10-12 定稿。**2026-10-16 修订：L96 线全线移除**（决策撤销，代码/
+> 数据/产物已清除），快速迭代载体（E4 等）改为 **KF smoke OSSE**
+> （`configs/osse_kolmo.yaml` 小配置，分钟级）。
+> 两项方法学创新（A：站点观测 token 化；B：流匹配集合生成），全部落在
+> 现有三对照 OSSE 协议（with-obs / zero-obs / fcst-spinup）内验证，
+> "with-obs 分析误差随循环下降"仍是第一判据。
 > 本方案遵循仓库既有原则：先改 schema 再加 yaml；单一权威实现；
 > 数据契约统一（state/obs/forcing/norms + 点观测扩展）。
 
@@ -15,7 +18,7 @@
 | 1 | 创新方向 | **A 观测 token 化 × B 流匹配集合**，两条线独立可消融、最终组合 | 接触面仅在 `step()` 签名，可并行推进 |
 | 2 | token 注入深度 | **逐 block cross-attention**（表达力最强） | 实现 `inject_every` 参数（1=逐 block，N=每 N 个 block 注一次），保留入口层/逐 block 消融阶梯，不必二选一 |
 | 3 | 扩散起点 | **B1 FM head 先行**（确定性主干 + 流匹配随机增量头），验证后升级 B2 full FM trunk | deterministic phase 及 checkpoint 零改动，首个可跑结果 1–2 周 |
-| 4 | 位置编码 | 球面：**实球谐基** Y_lm 到 lmax_pos≈16（与 sht.py 同族）；L96：1D sinusoidal | 几何原生；`spherical_harmonics_basis(lat, lon, lmax)` 工具 + 与网格基互验单测 |
+| 4 | 位置编码 | 球面：**实球谐基** Y_lm 到 lmax_pos≈16（与 sht.py 同族）；平面（KF 线）：2D sinusoidal | 几何原生；`spherical_harmonics_basis(lat, lon, lmax)` 工具 + 与网格基互验单测 |
 | 5 | 点观测契约 | `obs_points.npz`（values/mask/连续站位/channel_ids）+ gridded obs.npy **双渲染，一份真相** | A/B 公平：baseline 与 token 模型消费同一组站点数据 |
 | 6 | 先决修复 | **obs 缺失 mask**（现状缺失=精确 0，与气候均值不可区分） | 公平 baseline 的前提；grid 路径加 presence 通道 |
 | 7 | 采样成本 | FM 训练 rollout 与 EDA 循环均用 **1-step Euler**；评估时扫步数 {1,2,4,8,16} | 训练/推理成本与现有 noise-cond 同阶，步数 sweep 是独立成果 |
@@ -57,7 +60,6 @@ obs_points.npz:
   改造为连续站位重采样（symlink 重逻辑不变）。
 - IGRA/ISD 线：`data/obs.py` 在贴网格前本有逐站数据，加一个保存点；
   站位 = 站点真实经纬度（天然离网格，即实验 E5）。
-- L96 线：站位 = 变量索引 k（1D），`station_lat/lon` 退化为 `station_idx`。
 
 ### 2.2 模型：ObsTokenEncoder + 逐 block 注入
 
@@ -65,11 +67,11 @@ obs_points.npz:
 
 ```
 token_feat = MLP([ value_emb(C→d) , channel_emb(可学习表) ,
-                   pos_emb(SH 基/1D sinusoidal) , frame_emb(T-6h / T 两帧) ])
+                   pos_emb(SH 基 / 平面 sinusoidal) , frame_emb(T-6h / T 两帧) ])
 输出 (B, 2S, d_tok)（两帧 token 拼接，S 为站点数）
 ```
 
-**block 内第三残差分支**（`HuracanSFNOBlock` / `Hurac1DBlock` 同步）：
+**block 内第三残差分支**（`HuracanSFNOBlock` 同步）：
 
 ```
 h  = spec_norm(x, e);  x = x + ISHT(filter(SHT(h), g))     # 现有谱分支
@@ -114,7 +116,7 @@ attention 权重的经向剖面 vs LETKF 高斯局地化半径（EnKF/4DVar 基�
 | E1 | 密度 sweep | OSSE fraction {0.02,0.05,0.08,0.15,0.3} × {grid+mask, token} | 低密度 token 大胜（grid 输入近全 0） |
 | E2 | 离网格站点 | stations_offgrid，站位连续随机 | grid 结构性 snap 误差；token 不受影响（新能力） |
 | E3 | 报数率 sweep | obs_report_prob {1.0, 0.7, 0.4} | token 天然处理缺失 |
-| E4 | L96 A/B | obs_fraction {0.2, 0.5, 0.8} | 分钟级最快迭代，先验证实现 |
+| E4 | KF smoke A/B | `osse_kolmo` 32²/64² 小配置，obs_fraction {0.2, 0.5, 0.8} | 分钟级最快迭代，先验证实现 |
 | E5 | pilot ERA5 | IGRA/ISD 真实 1900 站真实离网格位置 | 真实大气检验 |
 
 成本：pilot 4608 像素 × 1900 站 × 每 block 一次注意力 ≈ 10⁹ 乘加/层，
@@ -127,7 +129,7 @@ attention 权重的经向剖面 vs LETKF 高斯局地化半径（EnKF/4DVar 基�
 
 ### 3.1 B1 FM head（先行，1–2 周）
 
-**结构**：确定性主干（HuracanSFNO/Huracan1D 原样，deterministic phase
+**结构**：确定性主干（HuracanSFNO 原样，deterministic phase
 checkpoint 直接复用）+ 小型流匹配头（blocks=2 的小 trunk 或轻 U-Net）。
 
 ```
@@ -179,7 +181,7 @@ model:
 `losses.py`（FM loss）、`phases.py`/`module.py`（阶段切换）。
 
 成本：pilot 4 步采样 × 8 成员 × 120 spinup calls ≈ 4× 当前 EDA 推理
-耗时，4090 可承受；L96 / OSSE smoke 分钟级。
+耗时，4090 可承受；KF / OSSE smoke 分钟级。
 
 ---
 
@@ -187,7 +189,7 @@ model:
 
 | 文件 | 改动 | 线 |
 |---|---|---|
-| `config/schema.py` | ModelCfg: obs_encoding/obs_token/ensemble_gen/diffusion；SyntheticCfg: stations_offgrid/station_jitter；L96 点观测字段 | A/B |
+| `config/schema.py` | ModelCfg: obs_encoding/obs_token/ensemble_gen/diffusion；SyntheticCfg: stations_offgrid/station_jitter | A/B |
 | `core/sht.py` | `spherical_harmonics_basis(lat, lon, lmax)` 工具 | A |
 | `core/obs_encoder.py` ⬜新 | ObsTokenEncoder（共享嵌入 + 块内 KV 投影） | A |
 | `core/modules.py` / `model.py` / `model1d.py` | block 第三残差分支（inject_every）；`step(..., obs_tokens=...)`；grid 路径 presence 通道 | A |
@@ -195,7 +197,7 @@ model:
 | `core/rollout.py` | obs_tokens 透传；member_noise → sampler 抽象 | A/B |
 | `core/losses.py` | FM loss | B |
 | `data/turbulence.py` | write_observations 重构（连续站位 + 双渲染）；make_obs_variant 同步 | A |
-| `data/lorenz96.py` / `data/obs.py` | 点观测导出（L96 站位=索引；IGRA/ISD 站位=真实经纬度） | A |
+| `data/obs.py` | 点观测导出（IGRA/ISD 站位=真实经纬度） | A |
 | `data/dataset.py` | window() 返回 obs_points（values/mask/站位 buffer） | A |
 | `training/phases.py` / `module.py` | ensemble_gen 开关切换 loss/采样 | B |
 | `scripts/run_osse.py` | A/B 对照入口 + E1–E3 sweep | A/B |
@@ -205,14 +207,14 @@ model:
 
 | 周 | 内容 |
 |---|---|
-| 0 | schema 扩展 + obs 缺失 mask 修复（公平 baseline）+ turbulence/L96 站点连续化与点观测契约（双渲染）+ 单测 |
-| 1–2 | ObsTokenEncoder（逐 block，inject_every 阶梯）→ L96 A/B（E4）→ OSSE smoke A/B（E1/E2/E3） |
-| 2–3 | B1 FM head → L96 → OSSE；ESSR/rank histogram 对比 |
+| 0 | schema 扩展 + obs 缺失 mask 修复（公平 baseline）+ turbulence/KF 站点连续化与点观测契约（双渲染）+ 单测 |
+| 1–2 | ObsTokenEncoder（逐 block，inject_every 阶梯）→ KF smoke A/B（E4）→ OSSE smoke A/B（E1/E2/E3） |
+| 2–3 | B1 FM head → KF smoke → OSSE；ESSR/rank histogram 对比 |
 | 4+ | A×B 组合 + sweep 矩阵 + B2 full FM 评估 + pilot ERA5（E5） |
 
 ## 6. 风险清单（按优先级）
 
-1. **逐 block 注入显存/速度**：grad checkpoint 已支持；L96 先验证，OSSE
+1. **逐 block 注入显存/速度**：grad checkpoint 已支持；KF smoke 先验证，OSSE
    smoke 实测每 block 开销，必要时退 inject_every=2/入口层（决策 #2 的
    阶梯即对冲）；
 2. **参数公平性失控**：token 分支/FM head 参数计入总预算对齐（决策 #8）；
