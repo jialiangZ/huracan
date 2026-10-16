@@ -13,7 +13,7 @@ calibrated during warm-up toward a target rms speed and frozen afterwards,
 giving a statistically steady turbulent nature run.  The exact laminar
 steady state psi* = A/(nu k_f^4) sin(k_f y) is used as a solver test.
 
-Output contract is identical to ``data/turbulence.py`` / ``synthetic.py``
+Output contract is identical to ``data/turbulence.py``
 (state/obs/forcing/norms files, fp16), so every downstream stage --
 training phases, EDA cycling, the OSSE controls of ``run_osse.py`` --
 runs unchanged.  Recorded channels: [w, psi, u, v] (this source's

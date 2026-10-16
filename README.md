@@ -74,9 +74,9 @@ uv pip install --python .venv/bin/python -r requirements.txt
     --device cuda:0          # 验证同化能力的最小实验
 .venv/bin/python tests/test_turbulence.py   # 物理正确性 + 管线冒烟
 
-# 1) 冒烟测试 (CPU, ~20 秒, 验证全链路)
-.venv/bin/python tests/test_smoke.py
+# 1) 单元测试与 P0 回归 (CPU)
 .venv/bin/python tests/test_units.py
+.venv/bin/python tests/test_p0_regressions.py
 
 # 2) 下载数据
 #    ERA5: 优先使用 WeatherBench2 公开 zarr (1° 6h, GCS 匿名访问, 免注册, 快):
@@ -101,10 +101,9 @@ CUDA_VISIBLE_DEVICES=3 .venv/bin/python scripts/run_eda.py --config configs/pilo
 
 ## 理想化动力系统 OSSE（湍流 / NS 方程）验证同化能力
 
-`data/synthetic.py` 的玩具系统（平流 + 线性波频散）可以从单帧外推，
-无法真正检验"融合稀疏噪声观测"的能力。为此本项目实现了基于
-**真实大气科学动力系统** 的 OSSE（观测系统模拟实验，
-`huracan/data/turbulence.py` + `scripts/run_osse.py`）：
+可从单帧外推的玩具平流系统无法真正检验"融合稀疏噪声观测"的能力，
+为此本项目实现了基于 **真实大气科学动力系统** 的 OSSE（观测系统模拟
+实验，`huracan/data/turbulence.py` + `scripts/run_osse.py`）：
 
 **Nature run = 旋转球面上的强迫-耗散正压涡度方程**（球面 2D
 Navier-Stokes / 湍流的涡度形式 + 行星 β 项）：
@@ -190,10 +189,10 @@ norm='ortho'，系数 (B, nlat, nlon//2+1, C) 与压缩谱滤波的
 .venv/bin/python tests/test_kolmogorov.py   # 物理正确性 + 管线冒烟
 ```
 
-**难度阶梯定位**：Lorenz-96（ODE）→ 球面正压涡度（上面的 OSSE，
-Huracan 架构的原生几何）→ Kolmogorov flow（平面 2D NS，ADDA/LEVDA
-可直接对标）→ ERA5+IGRA/ISD（pilot 线，真实大气）。三条 OSSE 线共用
-同一套协议资产（with/zero-obs/fcst-spinup 三对照、谱一致背景误差注入
+**难度阶梯定位**：球面正压涡度（上面的 OSSE，Huracan 架构的原生
+几何）→ Kolmogorov flow（平面 2D NS，ADDA/LEVDA 可直接对标）→
+ERA5+IGRA/ISD（pilot 线，真实大气）。两条 OSSE 线共用同一套协议
+资产（with/zero-obs/fcst-spinup 三对照、谱一致背景误差注入
 `ic_noise`、观测密度/噪声 sweep、扰动 IC spin-up、分析误差收敛曲线）。
 
 ## 与论文的已知差异（诚实清单）
@@ -222,7 +221,6 @@ Huracan 架构的原生几何）→ Kolmogorov flow（平面 2D NS，ADDA/LEVDA
 
 | 文件 | 用途 |
 |---|---|
-| `configs/smoke.yaml` | CPU 冒烟（合成数据，~20 秒全链路） |
 | `configs/osse_smoke.yaml` | 理想化湍流 OSSE 最小实验（GPU ~25 min） |
 | `configs/osse_kolmo.yaml` | Kolmogorov flow OSSE + 平面 FNO 主干（GPU ~40 min） |
 | `configs/osse.yaml` | OSSE at pilot scale（48×96，L=23 谱动力学，~3 h） |
@@ -252,7 +250,7 @@ huracan/
     loader.py      YAML + dot-path overrides
     provenance.py  每个关键超参的 PAPER/INFERRED/REPO 来源表
     report.py      通道核算 (269/334 不一致显式提示)
-  data/            数据集(公开 window API)/归一化/合成数据/IGRA/ISD 解析
+  data/            数据集(公开 window API)/归一化/IGRA/ISD 解析
     turbulence.py  OSSE nature run: 正压涡度湍流谱求解器 + 观测合成
                    + 观测变体 (make_obs_variant, 密度/噪声扫描)
     kolmogorov.py  Kolmogorov flow nature run: 平面伪谱 2D NS (2/3 规则
@@ -264,9 +262,9 @@ huracan/
     phases.py      fit_phase: 单入口编排 (Table 3 全部 6 阶段)
   inference/       EDA 循环 + 端到端预报 (日历驱动 spin-up)
   eval/            记分卡绘图
-configs/         smoke / osse_smoke / osse_kolmo / osse / pilot / scaleup_inferred / paper_constraints
-scripts/         下载、预处理、训练、推理、OSSE 实验 (run_osse.py)、phase-chain 演示 (瘦 CLI)
-tests/           端到端冒烟 + 单元测试 + 湍流/Kolmogorov 物理测试 (守恒律/解析解)
+configs/         osse_smoke / osse_kolmo / osse / pilot / scaleup_inferred / paper_constraints / bsef_r0
+scripts/         下载、预处理、训练、推理、OSSE 实验 (run_osse.py) (瘦 CLI)
+tests/           单元测试 + P0 回归 + 湍流/Kolmogorov 物理测试 (守恒律/解析解)
 ```
 
 复现基准文档为 `docs/REPRODUCTION_GUIDE.md`（论文原文可从

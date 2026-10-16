@@ -133,21 +133,11 @@ def build_models(
 ) -> tuple[nn.Module, nn.Module]:
     """Returns (forecast_model, assim_model) with correctly sized encoders.
 
-    ``model.backbone`` selects the trunk: "sfno" builds HuracanSFNO on the
-    configured grid (gauss sphere or planar square); "mlp1d" builds the
-    geometry-free Huracan1D (Lorenz-96 line), which never touches the
-    grid beyond nlat*nlon."""
+    Builds HuracanSFNO on the configured grid (gauss sphere or planar
+    square)."""
     n_state = cfg.n_prognostic()
     n_forc = cfg.n_forcing()
     n_obs = cfg.n_obs_channels()
-
-    if cfg.model.backbone == "mlp1d":
-        from .model1d import Huracan1D
-
-        npix = cfg.grid.nlat * cfg.grid.nlon
-        fcst = Huracan1D(n_state, n_forc, n_obs, cfg.model, npix, use_obs=False)
-        assim = Huracan1D(n_state, n_forc, n_obs, cfg.model, npix, use_obs=True)
-        return fcst, assim
 
     grid = grid_from_cfg(cfg.grid)
     if sht_factory is None and cfg.grid.type == "planar":

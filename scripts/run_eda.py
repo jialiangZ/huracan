@@ -18,7 +18,12 @@ import numpy as np
 
 from huracan.config import load_config
 from huracan.core.grid import grid_from_cfg
-from huracan.core.metrics import crps_ensemble, essr, rmse_ensemble_mean
+from huracan.core.metrics import (
+    crps_ensemble,
+    crps_fair,
+    essr,
+    rmse_ensemble_mean,
+)
 from huracan.eval.scorecard import scorecard
 from huracan.inference.runner import run_eda
 
@@ -29,6 +34,9 @@ def main():
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--device", default=None)
     ap.add_argument("--start-index", type=int, default=None)
+    ap.add_argument("--start-indices", type=int, nargs="+", default=None)
+    ap.add_argument("--split", default="val", choices=["train", "val", "test"])
+    ap.add_argument("--ic-noise", type=float, default=0.0)
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -36,48 +44,88 @@ def main():
         cfg.output_dir = args.workdir
     out = Path(cfg.output_dir)
 
-    res = run_eda(cfg, out, device=args.device, start_index=args.start_index)
-    preds = res["preds"].numpy()  # (M, 2F, npix, C) normalized 6-hourly
-    truth = res["truth"].numpy()
-
-    if cfg.model.backbone == "mlp1d":
-        grid, w = None, None  # geometry-free trunk: uniform weights
-    else:
-        grid = grid_from_cfg(cfg.grid)
-        w = grid.pixel_weights  # lat-lon grid is not equal-area -> weight
-
-    names = cfg.var_names()[: preds.shape[-1]]
-    crps = crps_ensemble(preds, truth, w)  # (2F, C)
-    ess = essr(preds, truth, w)
-    rmse = rmse_ensemble_mean(preds, truth, w)
-
-    np.savez(out / "metrics.npz", crps=crps, essr=ess, rmse=rmse, names=np.array(names))
-    print(
-        f"\nEDA: {res['members']} members, spin-up {res['spinup_days']} d "
-        f"({res['spinup_calls']} AR calls x 12 h), lead {res['lead_days']} d"
+    res_list = run_eda(
+        cfg,
+        out,
+        device=args.device,
+        start_index=args.start_index,
+        start_indices=args.start_indices,
+        split=args.split,
+        ic_noise=args.ic_noise,
+        collect_spinup=True,
     )
-    print("CRPS (normalized units), key variables by lead day:")
+    if not isinstance(res_list, list):
+        res_list = [res_list]
+
+    grid = grid_from_cfg(cfg.grid)
+    w = grid.pixel_weights  # lat-lon grid is not equal-area -> weight
+
+    all_crps, all_crps_fair, all_ess, all_ess_ms, all_rmse = [], [], [], [], []
+    for res in res_list:
+        preds = res["preds"].numpy()  # (M, F, npix, C) normalized 6-hourly
+        truth = res["truth"].numpy()
+        # P0: persistence = the ERA5 analysis at forecast initialization
+        # (actually available at issue time), NOT the first future field
+        persist = np.repeat(res["persistence_init"].numpy()[None], truth.shape[0], axis=0)
+        all_crps.append(crps_ensemble(preds, truth, w))
+        all_crps_fair.append(crps_fair(preds, truth, w))
+        all_ess.append(essr(preds, truth, w, mode="rms"))
+        all_ess_ms.append(essr(preds, truth, w, mode="mean_std"))
+        all_rmse.append(rmse_ensemble_mean(preds, truth, w))
+
+    def _agg(v):
+        return np.mean(np.stack(v), axis=0)  # mean over start points
+
+    crps, crps_f = _agg(all_crps), _agg(all_crps_fair)
+    ess, ess_ms, rmse = _agg(all_ess), _agg(all_ess_ms), _agg(all_rmse)
+    names = cfg.var_names()[: preds.shape[-1]]
+
+    np.savez(
+        out / "metrics.npz",
+        crps=crps,
+        crps_fair=crps_f,
+        essr=ess,
+        essr_mean_std=ess_ms,
+        rmse=rmse,
+        names=np.array(names),
+        start_t0=np.array([r["t0"] for r in res_list]),
+        split=res_list[0].get("split", "val"),
+    )
+    res = res_list[0]
+    print(
+        f"\nEDA: {res['members']} members, split={args.split}, "
+        f"{len(res_list)} start(s), spin-up {res['spinup_days']} d "
+        f"({res['spinup_calls']} AR calls), lead {res['lead_days']} d"
+    )
+    print("CRPS empirical (normalized units; main metric), key variables by lead day:")
     key = [n for n in ["z500", "t850", "2t"] if n in names]
     for n in key:
         j = names.index(n)
         daily = crps[:, j].reshape(-1, 4).mean(axis=1)
         print(f"  {n:>5}: " + " ".join(f"{d:.3f}" for d in daily))
-    print("ESSR by lead day:")
+    print("ESSR (RMS spread / RMSE) by lead day:")
     for n in key:
         j = names.index(n)
         daily = ess[:, j].reshape(-1, 4).mean(axis=1)
         print(f"  {n:>5}: " + " ".join(f"{d:.2f}" for d in daily))
 
-    # scorecard vs persistence baseline (observed last state persists)
-    persist = np.repeat(truth[0][None], truth.shape[0], axis=0)
-    crps_base = crps_ensemble(
-        np.repeat(persist[None], preds.shape[0], axis=0), truth, w
-    )
+    # scorecard vs the corrected persistence baseline
+    persist_crps = []
+    for res in res_list:
+        preds = res["preds"].numpy()
+        truth = res["truth"].numpy()
+        persist = np.repeat(
+            res["persistence_init"].numpy()[None], truth.shape[0], axis=0
+        )
+        persist_crps.append(
+            crps_ensemble(np.repeat(persist[None], preds.shape[0], axis=0), truth, w)
+        )
+    crps_base = _agg(persist_crps)
     scorecard(
         crps,
         crps_base,
         names,
-        title="Huracan vs persistence",
+        title="Huracan vs persistence (init-field)",
         out_path=str(out / "scorecard_persistence.png"),
     )
 

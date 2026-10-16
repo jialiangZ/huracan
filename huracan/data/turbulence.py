@@ -11,9 +11,9 @@ plus per-layer advected tracers: a temperature-like scalar relaxed to a
 meridional profile and a moisture-like scalar with a tropical source.  The
 inverse energy cascade of 2D turbulence + beta organize the flow into jets
 and Rossby waves -- the canonical idealization of the large-scale atmosphere
-and a genuinely chaotic system.  Unlike ``data/synthetic.py`` (solid-body
-advection + linear wave dispersion, extrapolable from a single frame), the
-trajectory here can only be recovered by *fusing* sparse noisy observations
+and a genuinely chaotic system: unlike a solid-body-advection toy
+(extrapolable from a single frame), the trajectory here can only be
+recovered by *fusing* sparse noisy observations
 with the learned dynamics, which is exactly what an assimilation system
 must demonstrate.
 
@@ -24,8 +24,9 @@ band-limited at L contain only degrees <= 2L, which the grid quadrature
 still integrates exactly (Gauss latitude nodes are exact to degree
 2*nlat-1 >= 2*lmax, the longitude sum is exact for m <= nlon-1).  Time
 stepping: RK4.  Output layout (files, normalizers, units of each record)
-is identical to ``data/synthetic.py`` so every downstream stage (training
-phases, EDA cycling, CRPS/ESSR evaluation) runs unchanged.
+follows the standard dataset contract of ``data/dataset.py`` so every
+downstream stage (training phases, EDA cycling, CRPS/ESSR evaluation)
+runs unchanged.
 
 Recorded physical units per channel family:
     z  geopotential [dam]  (z = z_base(level) + alpha * f * psi, geostrophic)
@@ -349,7 +350,7 @@ class TurbulentAtmosphere:
 
 
 # ---------------------------------------------------------------------------
-# nature-run generator (output contract identical to synthetic.py)
+# nature-run generator (standard dataset contract, see data/dataset.py)
 # ---------------------------------------------------------------------------
 
 
@@ -357,8 +358,8 @@ def generate_turbulence(cfg: HuracanConfig, out_dir: str | Path, seed: int = 0):
     """Run the nature run and write the standard dataset files.
 
     Writes state.npy / obs.npy / forcing.npy / times.json /
-    norm_state.json / norm_obs.json with the exact layout of
-    ``generate_synthetic`` (see data/dataset.py)."""
+    norm_state.json / norm_obs.json with the standard layout
+    (see data/dataset.py)."""
     t_start = time.time()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

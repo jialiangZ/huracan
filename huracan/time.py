@@ -16,7 +16,7 @@ Two conventions:
   GenCast-style convention -- one call advances one frame (6 h for the
   atmosphere) and the sliding pair moves by one frame per call.
 
-Non-calendar datasets (lorenz96 / kolmogorov / jhtdb) have no hours:
+Non-calendar datasets (kolmogorov / jhtdb) have no hours:
 they express experiment lengths directly in AR calls via
 ``eval.spinup_calls_override`` / ``lead_calls_override`` and only use
 the frame-counting helpers.

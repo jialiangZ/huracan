@@ -5,7 +5,9 @@
                           paper Sec 2.3).
 ``PhaseRunCallback``   -- stop at exactly ``pc.steps`` optimizer iterations,
                           save ``ckpt_{phase}.pt`` periodically and at the
-                          end, and write ``losses_{phase}.json``.
+                          end, write ``losses_{phase}.json``; with a
+                          validation stream it also maintains
+                          ``ckpt_{phase}_best.pt`` by held-out val loss.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 from pathlib import Path
 
 import lightning as L
+import numpy as np
 
 from ..config.schema import HuracanConfig
 from ..core import io
@@ -63,6 +66,8 @@ class PhaseRunCallback(L.Callback):
         self.workdir = Path(workdir)
         self.ckpt_every = ckpt_every
         self.losses: list[float] = []
+        self.best_val = float("inf")
+        self.val_history: list[dict] = []
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         self.losses = pl_module._losses
@@ -73,6 +78,31 @@ class PhaseRunCallback(L.Callback):
         if step % self.ckpt_every == 0 or done:
             io.save_phase(self.workdir, self.phase, step, pl_module.state_dicts())
 
+    def on_validation_end(self, trainer, pl_module):
+        """P0: keep the best checkpoint by held-out validation loss
+        (``ckpt_{phase}_best.pt``); the last-step checkpoint keeps its
+        original name and role.  Test data never touches this path."""
+        if not trainer.sanity_checking:
+            pl_module._val_losses = getattr(pl_module, "_val_losses", [])
+            val = (
+                float(trainer.callback_metrics.get("val_loss", float("inf")))
+                if not pl_module._val_losses
+                else float(np.mean(pl_module._val_losses))
+            )
+            pl_module._val_losses.clear()
+            self.val_history.append({"step": pl_module._step, "val_loss": val})
+            print(
+                f"  [val] step {pl_module._step} val_loss {val:.5f}", flush=True
+            )
+            if val < self.best_val:
+                self.best_val = val
+                io.save_phase(
+                    self.workdir,
+                    f"{self.phase}_best",
+                    pl_module._step,
+                    pl_module.state_dicts(),
+                )
+
     def on_train_end(self, trainer, pl_module):
         io.save_phase(
             self.workdir, self.phase, pl_module._step, pl_module.state_dicts()
@@ -80,3 +110,8 @@ class PhaseRunCallback(L.Callback):
         self.losses = pl_module._losses
         with open(self.workdir / f"losses_{self.phase}.json", "w") as f:
             json.dump(self.losses, f)
+        if self.val_history:
+            with open(self.workdir / f"val_{self.phase}.json", "w") as f:
+                json.dump(
+                    {"best": self.best_val, "history": self.val_history}, f, indent=1
+                )

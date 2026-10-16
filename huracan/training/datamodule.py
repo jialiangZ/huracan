@@ -25,6 +25,8 @@ class HuracanDataModule(L.LightningDataModule):
         pc = cfg.train.phases[phase]
         self.rollout = pc.n_calls()
         self.batch_size = pc.batch_size or cfg.train.batch_size
+        self.val_batch_size = cfg.train.val_batch_size or self.batch_size
+        self.val_stride = cfg.train.val_stride
         self.num_workers = cfg.train.num_workers
         self.data_dir = data_dir
 
@@ -37,4 +39,19 @@ class HuracanDataModule(L.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             data_dir=self.data_dir,
+        )
+
+    def val_dataloader(self):
+        """P0: held-out validation stream.  Deterministic stride subsampling
+        (``train.val_stride``) spans the whole validation period across all
+        seasons without loading every window."""
+        return make_loader(
+            self.cfg,
+            "val",
+            self.rollout,
+            self.val_batch_size,
+            shuffle=False,
+            num_workers=2,
+            data_dir=self.data_dir,
+            stride=self.val_stride,
         )

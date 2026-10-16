@@ -84,12 +84,16 @@ def _fetch_one(job):
             # WB2 zarrs store dims as (time, longitude, latitude)
             da = da.transpose("time", "latitude", "longitude")
             vals = np.asarray(da.values, dtype=np.float32)  # (T, lat, lon)
+            # P0: never silently zero non-finite data (an all-NaN variable
+            # produced all-zero chunks that passed the cache check before)
+            if not np.isfinite(vals).all():
+                raise ValueError(f"{name} {year}: non-finite values in source")
             T = vals.shape[0]
             out = np.empty((T, _W["npix"]), dtype=np.float32)
             for t in range(T):
                 out[t] = interp(vals[t])
             # float32 (NOT fp16): geopotential (~6e5) overflows fp16
-            np.save(out_path, np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0))
+            np.save(out_path, out)
             return f"{name} {year}: {T} steps {time.time() - t0:.0f}s"
         except Exception as e:  # network retries
             if attempt == 2:
@@ -103,6 +107,14 @@ def main():
     ap.add_argument("--years", type=int, nargs="+", default=[2010, 2011, 2012, 2013])
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--tmpdir", default="data/wb2_chunks")
+    ap.add_argument(
+        "--norm-start-date",
+        default=None,
+        help="P0: fit the normalizer only on frames >= this date (YYYY-MM-DD). "
+        "Must be paired with --norm-end-date; omit both for the legacy "
+        "full-range fit (leaks validation/test statistics).",
+    )
+    ap.add_argument("--norm-end-date", default=None)
     args = ap.parse_args()
 
     from huracan.config import load_config, var_names
@@ -164,9 +176,18 @@ def main():
     )
     T = len(times)
     assert T > 0
+    # ---- assemble (P0 fix: CUMULATIVE offsets) -------------------------
+    # Year lengths differ (leap years have 1464 frames).  The old
+    # ``yi * chunk.shape[0]`` placement misplaced every year after 2012 by
+    # 4 frames per preceding leap year -- silently zero-filling the tail
+    # and overwriting earlier years (2023's data landed inside 2010).
+    # Placement is now the running sum of the chunk lengths actually read.
+    dts = [t.to_pydatetime() for t in times]
     state = np.zeros((T, npix, len(names)), dtype=np.float32)
+    per_year_len: dict[int, int] = {}
     for name, i in name_idx.items():
-        for yi, y in enumerate(args.years):
+        off = 0
+        for y in args.years:
             chunk = np.load(tmp / f"{name}_{y}.npy")
             if chunk.shape[1] != npix:
                 raise ValueError(
@@ -174,11 +195,35 @@ def main():
                     f"expected {npix} (grid config changed? the cache is "
                     f"self-healing on fetch -- just rerun the script)"
                 )
-            sl = slice(yi * chunk.shape[0], (yi + 1) * chunk.shape[0])
-            state[sl, :, i] = chunk
+            n = chunk.shape[0]
+            per_year_len[y] = n
+            state[off : off + n, :, i] = chunk
+            off += n
+        if off != T:
+            raise ValueError(
+                f"assembled {off} frames for {name} but times has {T}; "
+                f"chunk years do not cover the requested range"
+            )
+        if (state[:, :, i] == 0).all(axis=(1, 2)).any():
+            raise ValueError(
+                f"channel {name} contains all-zero frames after assembly "
+                f"(fetch failures must not be silently zeroed)"
+            )
         print(f"  assembled {name}", flush=True)
+    # cross-check year boundaries against the time axis
+    off = 0
+    import datetime as _dt
 
-    dts = [t.to_pydatetime() for t in times]
+    for y in args.years:
+        n = per_year_len[y]
+        d0, d1 = dts[off], dts[off + n - 1]
+        if d0 != _dt.datetime(y, 1, 1, 0) or d0.year != y:
+            raise ValueError(f"year {y} starts at {d0}, expected {y}-01-01 00:00")
+        exp_last = _dt.datetime(y, 12, 31, 18) if y < args.years[-1] else dts[-1]
+        if d1 > exp_last:
+            raise ValueError(f"year {y} ends at {d1} > {exp_last}")
+        off += n
+
     from huracan.core.grid import insolation
 
     insol = np.stack(
@@ -208,9 +253,26 @@ def main():
     forcing[:, :, 1] = zsfc[None]
     forcing[:, :, 2] = lsm[None]
 
-    norm = Normalizer.from_array(names, state)
+    if args.norm_start_date or args.norm_end_date:
+        if not (args.norm_start_date and args.norm_end_date):
+            raise SystemExit("--norm-start-date and --norm-end-date come in pairs")
+        lo = pd.Timestamp(args.norm_start_date)
+        hi = pd.Timestamp(args.norm_end_date)
+        fit_frames = np.flatnonzero((times >= lo) & (times <= hi + pd.Timedelta(hours=18)))
+        if len(fit_frames) == 0:
+            raise SystemExit(f"no frames in norm window [{lo}, {hi}]")
+        print(
+            f"normalizer fitted on {len(fit_frames)} train frames "
+            f"({times[fit_frames[0]]} .. {times[fit_frames[-1]]}) -- "
+            f"validation/test data excluded (P0 fix)"
+        )
+    else:
+        fit_frames = None  # legacy behaviour, kept for reproducibility only
+        print("WARNING: normalizer fitted on ALL frames (validation/test leak)")
+    norm = Normalizer.from_array(names, state, frames=fit_frames)
     norm.save(outdir / "norm_state.json")
-    np.save(outdir / "state.npy", state)  # fp32
+    np.save(outdir / "state.npy", state)  # fp32: fp16 overflows on
+    # geopotential (~6e5 m^2/s^2 > 65504) -- see P0 audit
     np.save(
         outdir / "forcing.npy",
         (forcing / np.array([500.0, 1e5, 1.0], dtype=np.float32)).astype(np.float16),

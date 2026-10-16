@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def make_tiny_cfg():
-    cfg = load_config(ROOT / "configs" / "smoke.yaml")
+    cfg = load_config(ROOT / "configs" / "osse_smoke.yaml")
     cfg.device = "cpu"
     return cfg
 
@@ -55,7 +55,7 @@ def test_config_typed_and_coerced():
 
 def test_config_overrides():
     cfg = load_config(
-        ROOT / "configs" / "smoke.yaml",
+        ROOT / "configs" / "osse_smoke.yaml",
         overrides=["train.phases.deterministic.steps=99", "grid.nlon=24"],
     )
     assert cfg.train.phases["deterministic"].steps == 99
@@ -132,8 +132,9 @@ def test_time_semantics_single_output():
     cfg = make_tiny_cfg()
     cfg.model.outputs_per_call = 1
     assert cfg.call_semantics().advance_hours == 6.0
-    assert cfg.spinup_calls() == 8  # 2 days at 6 h per call
-    assert cfg.lead_calls() == 8
+    # spinup_days x (24 h / 6 h-per-call) calls, lead likewise
+    assert cfg.spinup_calls() == round(cfg.eval.spinup_days * 4)
+    assert cfg.lead_calls() == round(cfg.eval.lead_days * 4)
     print("  single-output time semantics (1 call = 6 h)  OK")
 
 

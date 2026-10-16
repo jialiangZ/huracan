@@ -44,6 +44,7 @@ def fit_phase(
     data_dir: str | Path | None = None,
     ckpt_every: int = 2000,
     log_every: int = 50,
+    extra_callbacks: list | None = None,
 ) -> dict:
     """Train one phase; returns {"losses": [...]}."""
     if phase not in ALL_PHASES:
@@ -63,16 +64,29 @@ def fit_phase(
     module = HuracanLitModule(cfg, phase)
     dm = HuracanDataModule(cfg, phase, data_dir=data_dir)
     run_cb = PhaseRunCallback(cfg, phase, workdir, ckpt_every=ckpt_every)
+    callbacks = [PhaseInitCallback(cfg, phase, workdir), run_cb]
+    if extra_callbacks:
+        callbacks += list(extra_callbacks)
+    # P0: periodic held-out validation (loss = the phase's training
+    # objective on non-overlapping windows).  Phases shorter than one
+    # interval still validate at epoch boundaries.  Tiny smoke datasets
+    # have fewer batches per epoch than the interval -- clamp so Lightning
+    # accepts the schedule.
+    vint = max(1, min(cfg.train.val_check_interval, cfg.train.phases[phase].steps))
+    n_batches = len(dm.train_dataloader())
+    vint = max(1, min(vint, n_batches))
     trainer = L.Trainer(
         accelerator=accelerator,
         devices=devices,
         max_epochs=10_000_000,  # PhaseRunCallback stops at pc.steps
         enable_checkpointing=False,
-        callbacks=[PhaseInitCallback(cfg, phase, workdir), run_cb],
+        callbacks=callbacks,
         logger=CSVLogger(save_dir=str(workdir), name="logs", version=phase),
         num_sanity_val_steps=0,
         log_every_n_steps=log_every,
         default_root_dir=str(workdir),
+        val_check_interval=vint,
+        limit_val_batches=32,
     )
     trainer.fit(module, datamodule=dm)
-    return {"losses": run_cb.losses}
+    return {"losses": run_cb.losses, "val": run_cb.val_history}

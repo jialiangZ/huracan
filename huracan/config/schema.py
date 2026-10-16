@@ -47,11 +47,9 @@ class GridCfg:
 class ModelCfg:
     hidden: int = 192  # [REPO] not published
     blocks: int = 6  # [REPO] not published
-    backbone: str = "sfno"  # sfno | mlp1d (cyclic-chain datasets)
     k_filters: int = 8  # paper A.2: k=15 at scale
     swin_window_lat: int = 6  # [REPO] not published; must divide nlat
     swin_window_lon: int = 12  # [REPO] not published; must divide nlon
-    conv_kernel: int = 9  # [REPO] mlp1d only: cyclic conv width
     heads: int = 3  # [REPO] not published
     mlp_ratio: float = 4.0  # [REPO] not published
     noise_dim: int = 8  # [REPO] not published
@@ -62,10 +60,6 @@ class ModelCfg:
     outputs_per_call: int = 2  # [PAPER] fields per call; 1 = GenCast-style
 
     def __post_init__(self):
-        if self.backbone not in ("sfno", "mlp1d"):
-            raise ValueError(
-                f"model.backbone must be 'sfno' or 'mlp1d', got {self.backbone!r}"
-            )
         if self.prediction not in ("residual", "direct"):
             raise ValueError(
                 f"model.prediction must be 'residual' or 'direct', "
@@ -154,44 +148,6 @@ class TurbCfg:
 
 
 @dataclass
-class Lorenz96Cfg:
-    """Lorenz-96 nature-run settings (DATA_PLAN Sec. 3, all [REPO]).
-
-    One-level main line (K=40, F=8, dt=0.05) is the community lingua
-    franca; ``two_scale`` adds the Wilks-2005-parameter multiscale
-    ablation whose stored state is X only (Y = unresolved subgrid).
-
-    Frame semantics: one frame = one dt = one observation cycle (there
-    are no hours; express experiment lengths in AR calls via
-    ``eval.spinup_calls_override`` / ``lead_calls_override``).
-
-    Dataset layout: [train | val | test] independent trajectories
-    concatenated into one state.npy; suggested periods (with boundary
-    buffers) are printed and returned by ``generate_lorenz96``.
-    """
-
-    # one-level system
-    n_vars: int = 40
-    forcing_f: float = 8.0
-    dt: float = 0.05
-    warmup_steps: int = 2000
-    train_steps: int = 102000
-    val_steps: int = 14000
-    test_steps: int = 20000
-    # observations (physical units; noise sigma is absolute)
-    obs_every: int = 2  # observe every k-th variable
-    obs_sigma: float = 1.0
-    # two-scale ablation (state = X only)
-    two_scale: bool = False
-    n_slow: int = 36
-    n_fast_per_slow: int = 10
-    coupling_h: float = 1.0
-    coupling_b: float = 10.0
-    coupling_c: float = 10.0
-    fast_substeps: int = 10  # RK4 substeps per stored frame (2L only)
-
-
-@dataclass
 class JhtdbCfg:
     """JHTDB forced-isotropic-turbulence cutout plan (DATA_PLAN Sec. 5).
 
@@ -237,7 +193,7 @@ class SyntheticCfg:
 
 @dataclass
 class DataCfg:
-    source: str = "synthetic"
+    source: str = "era5"
     root: str = "data"
     variables: VariablesCfg = field(default_factory=VariablesCfg)
     forcing: list[str] = field(default_factory=lambda: ["insol", "zsfc", "lsm"])
@@ -250,7 +206,6 @@ class DataCfg:
     # selected by ``source``, which doubles as the data directory name.
     # Kolmogorov flow lives under ``synthetic.kolmogorov`` (KolmoCfg,
     # data/kolmogorov.py) alongside turbulence.
-    lorenz96: Lorenz96Cfg = field(default_factory=Lorenz96Cfg)
     jhtdb: JhtdbCfg = field(default_factory=JhtdbCfg)
 
 
@@ -346,6 +301,11 @@ class TrainCfg:
     grad_clip: float = 1.0
     warmup_frac: float = 0.02
     num_workers: int = 2
+    # P0: held-out validation stream (loss identical to the phase's training
+    # objective; stride spans all seasons; check interval in optimizer steps)
+    val_batch_size: int | None = None
+    val_stride: int = 8
+    val_check_interval: int = 250
     phases: dict[str, PhaseCfg] = field(default_factory=_default_phases)
 
 
@@ -363,10 +323,10 @@ class EvalCfg:
     spinup_days: float = 60.0  # paper: at least 3 months (~92 d)
     lead_days: float = 10.0  # paper: 10 lead days
     start_index: int | None = None
-    # Non-atmosphere datasets (lorenz96 / kolmogorov / jhtdb) have no
-    # calendar: express experiment lengths directly in AR calls instead
-    # (paper convention: 1 call = 2 frames; L96: 1 call = 0.1 t.u.).
-    # When set, these override the day-derived values.
+    # Non-atmosphere datasets (kolmogorov / jhtdb) have no calendar:
+    # express experiment lengths directly in AR calls instead (paper
+    # convention: 1 call = 2 frames).  When set, these override the
+    # day-derived values.
     spinup_calls_override: int | None = None
     lead_calls_override: int | None = None
 

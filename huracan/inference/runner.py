@@ -63,6 +63,8 @@ class EdaRunner:
         spinup: int,
         lead: int,
         collect_spinup: bool = False,
+        ic_noise: float = 0.0,
+        grid_hw: tuple[int, int] | None = None,
     ):
         state = window["state"].to(self.device)
         forcing = window["forcing"].to(self.device)
@@ -81,6 +83,8 @@ class EdaRunner:
             spinup=spinup,
             lead=lead,
             collect_spinup=collect_spinup,
+            ic_noise=ic_noise,
+            grid_hw=grid_hw,
         )
         spinup_mean = out[2] if collect_spinup else None
         spinup_end, preds = out[0], out[1]
@@ -95,6 +99,12 @@ class EdaRunner:
             "spinup_calls": spinup,  # AR calls, opc*6 h each
             "lead_calls": lead,
         }
+        # P0: persistence baseline initialization = the ERA5 field at the
+        # forecast start (frame s0-1, the analysis actually available when
+        # the forecast is issued).  The old script persisted ``truth[0]`` --
+        # the first *future* validation field, i.e. a baseline built with
+        # information from the verification period.
+        res["persistence_init"] = state[s0 - 1].cpu()
         if collect_spinup:
             res["spinup_mean"] = spinup_mean  # (opc*spinup, npix, C) ens mean
         return res
@@ -106,33 +116,66 @@ def run_eda(
     device: str | None = None,
     start_index: int | None = None,
     data_dir: str | Path | None = None,
-) -> dict:
-    """Full experiment entry point (keeps the original call signature).
+    split: str = "val",
+    start_indices: list[int] | None = None,
+    ic_noise: float = 0.0,
+    collect_spinup: bool = False,
+) -> dict | list[dict]:
+    """EDA evaluation entry point.
 
-    Spin-up and lead time are calendar-driven (guide Sec. 12.3): days from
-    the config are converted to AR calls through ``cfg.call_semantics()``
-    (paper: 12 h per call; single-output variant: 6 h), so "3 months"
-    can never silently become a wrong loop count again."""
+    P0 changes:
+    * ``split`` selects the evaluation period explicitly (was hard-wired
+      to "val"); every start point's full window (spin-up + lead) is
+      verified to lie inside the split -- no silent reads across the
+      boundary.
+    * ``start_indices`` evaluates several start points and returns a list
+      of per-start results (single start keeps the original dict return).
+    * ``ic_noise`` perturbs each member's initial pair with spectrally
+      smooth noise (the OSSE regime; 0 keeps the original perfect start).
+
+    Spin-up and lead time are calendar-driven via ``cfg.call_semantics()``:
+    at outputs_per_call=1 one call advances 6 h (60 d spin-up = 240 calls).
+    """
     workdir = Path(workdir)
     ecfg = cfg.eval
     sem = cfg.call_semantics()
     S, F = cfg.spinup_calls(), cfg.lead_calls()
 
     runner = EdaRunner.from_checkpoints(cfg, workdir, device=device)
-    ds = SphereDataset(cfg, "val", rollout=S + F, data_dir=data_dir)
-    t0 = start_index if start_index is not None else ds.first_t0
+    ds = SphereDataset(cfg, split, rollout=S + F, data_dir=data_dir)
+    if start_indices is None:
+        t0s = [start_index if start_index is not None else ds.first_t0]
+    else:
+        t0s = list(start_indices)
+    for t0 in t0s:
+        if t0 not in set(ds.valid_t0.tolist()):
+            raise ValueError(
+                f"start index {t0} outside the legal {split} window range "
+                f"[{ds.valid_t0[0]}, {ds.valid_t0[-1]}] for a "
+                f"{sem.window_frames(S + F)}-frame spin-up+lead window"
+            )
 
-    window = ds.window(t0, sem.window_frames(S + F))
-    window["obs"] = window["obs"][: sem.obs_frames(S)]  # spin-up only
-
-    res = runner.run(
-        window,
-        t0=t0,
-        members=ecfg.members,
-        spinup=S,
-        lead=F,
-    )
-    res["spinup_days"] = ecfg.spinup_days
-    res["lead_days"] = ecfg.lead_days
-    torch.save(res, workdir / "eda_result.pt")
-    return res
+    results = []
+    for t0 in t0s:
+        window = ds.window(t0, sem.window_frames(S + F))
+        window["obs"] = window["obs"][: sem.obs_frames(S)]  # spin-up only
+        res = runner.run(
+            window,
+            t0=t0,
+            members=ecfg.members,
+            spinup=S,
+            lead=F,
+            collect_spinup=collect_spinup,
+            ic_noise=ic_noise,
+            grid_hw=(cfg.grid.nlat, cfg.grid.nlon),
+        )
+        res["split"] = split
+        res["spinup_days"] = ecfg.spinup_days
+        res["lead_days"] = ecfg.lead_days
+        results.append(res)
+    if len(results) == 1:
+        torch.save(results[0], workdir / "eda_result.pt")
+        return results[0]
+    for i, res in enumerate(results):
+        torch.save(res, workdir / f"eda_result_{res['split']}_{i}.pt")
+    return results

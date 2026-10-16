@@ -1,10 +1,11 @@
 """Per-variable normalization shared by states, forcings and observations.
 
 ``cfg`` arguments are typed ``HuracanConfig`` objects.  States are stored on
-disk as raw physical values (fp16 memmap); the dataset normalizes on the
-fly.  Observations are normalized with the *same* stats as the matching
-state variable and missing pixels are set to exactly zero after
-normalization (paper Sec. 2.1 item 5).
+disk as raw physical values (fp32 via the WB2 path); the dataset normalizes
+on the fly.  Observations are normalized with the *same* stats as the
+matching state variable; validity is tracked by explicit masks/counts
+(P0), and missing pixels are exact zeros after normalization (paper Sec.
+2.1 item 5).
 """
 
 from __future__ import annotations
@@ -60,10 +61,43 @@ class Normalizer:
 
     @classmethod
     def from_array(
-        cls, names: list[str], arr: np.ndarray, sample_step: int = 8
+        cls,
+        names: list[str],
+        arr: np.ndarray,
+        sample_step: int = 8,
+        frames: np.ndarray | slice | None = None,
     ) -> "Normalizer":
-        a = arr[::sample_step].astype(np.float32)
-        return cls(names, a.mean(axis=(0, 1)), a.std(axis=(0, 1)) + 1e-6)
+        """Fit normalization stats.
+
+        ``frames`` (P0 fix): explicit frame indices/slice to fit on -- used
+        to restrict the fit to the *training* period only so validation and
+        test data can never leak into the normalizer.  Statistics are
+        streamed in chunks (the array is usually a multi-GB memmap) and
+        every stored frame contributes, so all four synoptic hours are
+        always covered (``sample_step`` subsampling on a 6-hourly axis
+        always lands on the same time of day).
+
+        ``sample_step`` is retained for backward compatibility only.
+        """
+        if frames is None:
+            frames = np.arange(0, arr.shape[0], sample_step)
+        idx = np.atleast_1d(np.asarray(frames))
+        if arr.ndim != 3:
+            raise ValueError(f"expected (T, npix, C) array, got shape {arr.shape}")
+        C = arr.shape[2]
+        s = np.zeros(C, dtype=np.float64)
+        s2 = np.zeros(C, dtype=np.float64)
+        count = 0  # number of (frame, pixel) samples per channel
+        chunk = 256
+        for a in range(0, len(idx), chunk):
+            block = np.asarray(arr[idx[a : a + chunk]], dtype=np.float64)
+            s += block.sum(axis=(0, 1))
+            s2 += np.square(block).sum(axis=(0, 1))
+            count += block.shape[0] * block.shape[1]
+        count = max(count, 1)
+        mean = s / count
+        var = np.maximum(s2 / count - np.square(mean), 0.0)
+        return cls(names, mean, np.sqrt(var) + 1e-6)
 
 
 def obs_norm_mapping(cfg, state_norm: Normalizer) -> Normalizer:

@@ -1,0 +1,66 @@
+# BSEF R0 baseline (RESEARCH_PLAN v9 + 4090 plan P1)
+#
+# Protocol (all experiments, frozen 2026-10-13):
+#   * single-output convention: input (t-6h, t) -> output (t+6h), one call
+#     advances 6h (model.outputs_per_call: 1)
+#   * data: ERA5 (WB2) 2010-2023 at 48x96; splits are EXACT calendar years
+#       train 2010-2011  -> frames [0, 2920)     (2 x 365d, no leap)
+#       val   2012       -> frames [2920, 4384)  (leap year: 1464 frames)
+#       test  2013       -> frames [4384, 5844)  (365d)
+#       reserve 2014-23  -> untouched (final held-out, never loaded)
+#   * data dir data/era5_v1: train-only normalizer (P0) + fixed obs bundle
+#   * phases calendar-converted from the opc=2 pilot: fcst_ar 12 calls = 3d
+#     (was 6x12h), assim 16 calls = 4d (was 8x12h).  joint/hybrid are NOT
+#     part of this round (4090 plan P1 stops before joint).
+run_name: bsef_r0
+output_dir: runs/bsef/r0
+device: cuda
+seed: 0
+grid:
+  nlat: 48
+  nlon: 96
+  lmax: 47
+model:
+  hidden: 192
+  blocks: 6
+  k_filters: 8
+  swin_window_lat: 6
+  swin_window_lon: 12
+  heads: 3
+  mlp_ratio: 4.0
+  noise_dim: 8
+  noise_embed_dim: 64
+  degree_freqs: 16
+  prediction: residual
+  outputs_per_call: 1     # v9 protocol: one call = one 6h step
+data:
+  source: era5_v1
+  root: data
+  variables:
+    upper: [z, t, u, v, q]
+    levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+    surface: [2t, 2d, 10u, 10v, tcc, tcwv, msl]
+  obs:
+    enabled: true
+    surface_vars: [2t, 2d, 10u, 10v, msl]
+  train_period: [0, 2920]      # 2010-01-01 .. 2011-12-31
+  val_period: [2920, 4384]     # 2012 (leap)
+  test_period: [4384, 5844]    # 2013
+train:
+  batch_size: 8
+  ensemble: 2
+  num_workers: 4
+  val_stride: 8                # ~180 val windows span all of 2012
+  val_check_interval: 250
+  phases:
+    deterministic: {steps: 40000, lr: 5e-4, loss: l1, rollout: 0, noise: false}
+    stochastic:  {steps: 15000, lr: 2e-4, loss: crps, rollout: 0, noise: true,
+                  init: deterministic}
+    fcst_ar:     {steps: 3000, lr: 3e-6, loss: crps, rollout: 12, noise: true,
+                  schedule: constant, init: stochastic}
+    assim:       {steps: 5000, lr: 2e-4, loss: crps, rollout: 16, noise: true,
+                  obs: true, init: stochastic}
+eval:
+  members: 8
+  spinup_days: 60    # 240 calls x 6h
+  lead_days: 10      # 40 calls x 6h

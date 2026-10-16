@@ -4,8 +4,6 @@
 Usage:
   python scripts/train.py --config configs/pilot.yaml --phase all
   python scripts/train.py --config configs/pilot.yaml --phase stochastic
-  python scripts/train.py --config configs/smoke.yaml --phase all \
-      --override train.phases.deterministic.steps=20
 """
 
 from __future__ import annotations
@@ -46,13 +44,7 @@ def main():
 
     phases = ALL_PHASES if args.phase == "all" else args.phase.split(",")
 
-    if cfg.data.source == "synthetic":
-        from huracan.data.synthetic import generate_synthetic
-
-        root = Path(cfg.data.root) / "synthetic"
-        if not (root / "state.npy").exists():
-            generate_synthetic(cfg, root, seed=cfg.seed)
-    elif cfg.data.source.startswith("turbulence"):
+    if cfg.data.source.startswith("turbulence"):
         from huracan.data.turbulence import generate_turbulence
 
         root = Path(cfg.data.root) / cfg.data.source

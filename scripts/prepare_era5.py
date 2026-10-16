@@ -133,7 +133,9 @@ def main():
 
     norm = Normalizer.from_array(names, state)
     norm.save(outdir / "norm_state.json")
-    np.save(outdir / "state.npy", state.astype(np.float16))
+    # P0 fix: fp16 OVERFLOWS on geopotential (z ~ 6e5 m^2/s^2 > 65504).
+    # Physical states stay fp32; only already-normalized caches may use fp16.
+    np.save(outdir / "state.npy", state.astype(np.float32))
     np.save(
         outdir / "forcing.npy",
         (forcing / np.array([500.0, 1e5, 1.0], dtype=np.float32)).astype(np.float16),
